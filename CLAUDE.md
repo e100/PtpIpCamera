@@ -12,6 +12,7 @@ The library lives in `lib/PtpIpCamera/src/` within the ESP32PTPCameraControl pro
 ICameraControl          (abstract interface — applications depend only on this)
     ├── CanonCamera     (Canon EOS PTP/IP logic — base class for all Canon models)
     │       └── Canon5DMkIV   (5D Mark IV subclass — override only what differs)
+    ├── NikonCamera     (Nikon PTP/IP via standard PTP props; Z-series WiFi PIN pairing)
     └── SimCamera       (full-fidelity simulated camera — no hardware required)
 
 PtpIpSession            (PTP/IP session: OpenSession, transaction IDs, opcode wrappers)
@@ -37,6 +38,12 @@ PtpIpConstants.h        (PTP/IP opcodes, response codes, Canon vendor codes)
 | `PtpIpLog.h/.cpp` | Logging: register a `void(uint8_t level, const char* msg)` callback. No Serial output without a callback. |
 | `PtpIpDiag.h/.cpp` | 512-entry ring buffer of protocol events; dump with `dumpDiagnostics(Serial)`. |
 | `PtpIpConstants.h` | PTP/IP and Canon vendor opcode/response constants. |
+| `NikonCamera.h/.cpp` | Nikon implementation: pairing (0x952B / 0x935A), standard exposure props, DeviceInfo. |
+| `PtpDeviceInfo.h` | Header-only DeviceInfo dataset parser; usable in native tests. |
+
+## PTP/IP packet type numbering
+
+The original `PTPIP_PKT_*` constants (used by the Canon paths) number Event/Start_Data/Data differently from the PTP/IP spec (CIPA DC-005: Event 0x08, Start_Data 0x09, Data 0x0A, End_Data 0x0C). New code uses the spec-numbered `PTPIP_TYPE_*` constants and `PtpIpSession::dataIn()` / `dataOut()`. Canon paths were left untouched because they cannot be re-tested without a Canon body.
 
 ## Adding a new Canon model
 
@@ -137,4 +144,4 @@ Run device tests: `pio test -e adafruit_feather_esp32s3`
 - **No dynamic memory allocation** in the hot path. Event buffer (`_eventBuf[16384]`) is a member array. Ring buffer is statically sized.
 - **No RTOS dependency.** Single-threaded: all methods called from the same Arduino `loop()` task. Not thread-safe — callers are responsible for synchronisation in RTOS environments.
 - **No Serial output.** All logging gated through the callback. Library is usable in headless / production firmware.
-- **Canon-agnostic transport layer.** `PtpIpTransport` and `PtpIpSession` have no Canon-specific knowledge. Adding Nikon or Sony support means implementing `ICameraControl` directly against their PTP/IP dialect.
+- **Canon-agnostic transport layer.** `PtpIpTransport` and `PtpIpSession` have no Canon-specific knowledge. Nikon support (`NikonCamera`) implements `ICameraControl` directly; Sony would follow the same pattern.

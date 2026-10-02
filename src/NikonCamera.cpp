@@ -1,0 +1,612 @@
+#include "NikonCamera.h"
+#include "PtpIpConstants.h"
+#include "PtpIpLog.h"
+#include <Arduino.h>
+#include <math.h>
+#include <string.h>
+
+#define LOG_TAG "NIKON"
+
+// Bits in NikonState::known
+static constexpr uint8_t NIKON_KNOWN_FNUMBER  = 0x01;
+static constexpr uint8_t NIKON_KNOWN_EXPOSURE = 0x02;
+static constexpr uint8_t NIKON_KNOWN_ISO      = 0x04;
+static constexpr uint8_t NIKON_KNOWN_BIAS     = 0x08;
+static constexpr uint8_t NIKON_KNOWN_WB       = 0x10;
+static constexpr uint8_t NIKON_KNOWN_PROGRAM  = 0x20;
+
+// Exposure properties kept in NikonState, in the order poll() reads them.
+struct NikonPropSpec {
+    uint16_t       code;
+    uint8_t        size;       // bytes on the wire
+    uint8_t        knownBit;
+    bool           reportable; // has a CameraProperty for onPropChanged
+    CameraProperty prop;
+};
+
+static const NikonPropSpec NIKON_PROPS[] = {
+    { PTP_PROP_APERTURE,         2, NIKON_KNOWN_FNUMBER,  true,  CameraProperty::APERTURE },
+    { PTP_PROP_SHUTTER_SPEED,    4, NIKON_KNOWN_EXPOSURE, true,  CameraProperty::SHUTTER_SPEED },
+    { PTP_PROP_ISO,              2, NIKON_KNOWN_ISO,      true,  CameraProperty::ISO },
+    { PTP_PROP_EXPOSURE_BIAS,    2, NIKON_KNOWN_BIAS,     true,  CameraProperty::EXPOSURE_COMPENSATION },
+    { PTP_PROP_WHITE_BALANCE,    2, NIKON_KNOWN_WB,       true,  CameraProperty::WHITE_BALANCE },
+    { PTP_PROP_EXPOSURE_PROGRAM, 2, NIKON_KNOWN_PROGRAM,  false, CameraProperty::APERTURE },
+};
+
+static uint32_t stateField(const NikonState& s, uint16_t code) {
+    switch (code) {
+        case PTP_PROP_APERTURE:         return s.fNumber;
+        case PTP_PROP_SHUTTER_SPEED:    return s.exposureTime;
+        case PTP_PROP_ISO:              return s.iso;
+        case PTP_PROP_EXPOSURE_BIAS:    return (uint16_t)s.exposureBias;
+        case PTP_PROP_WHITE_BALANCE:    return s.whiteBalance;
+        case PTP_PROP_EXPOSURE_PROGRAM: return s.program;
+        default:                        return 0;
+    }
+}
+
+static void setStateField(NikonState& s, uint16_t code, uint32_t v) {
+    switch (code) {
+        case PTP_PROP_APERTURE:         s.fNumber      = (uint16_t)v; break;
+        case PTP_PROP_SHUTTER_SPEED:    s.exposureTime = v;           break;
+        case PTP_PROP_ISO:              s.iso          = (uint16_t)v; break;
+        case PTP_PROP_EXPOSURE_BIAS:    s.exposureBias = (int16_t)(uint16_t)v; break;
+        case PTP_PROP_WHITE_BALANCE:    s.whiteBalance = (uint16_t)v; break;
+        case PTP_PROP_EXPOSURE_PROGRAM: s.program      = (uint16_t)v; break;
+        default: break;
+    }
+}
+
+static const NikonPropSpec* findSpec(uint16_t code) {
+    for (const NikonPropSpec& p : NIKON_PROPS) if (p.code == code) return &p;
+    return nullptr;
+}
+
+static uint16_t propCodeFor(CameraProperty prop) {
+    switch (prop) {
+        case CameraProperty::APERTURE:              return PTP_PROP_APERTURE;
+        case CameraProperty::SHUTTER_SPEED:         return PTP_PROP_SHUTTER_SPEED;
+        case CameraProperty::ISO:                   return PTP_PROP_ISO;
+        case CameraProperty::EXPOSURE_COMPENSATION: return PTP_PROP_EXPOSURE_BIAS;
+        case CameraProperty::WHITE_BALANCE:         return PTP_PROP_WHITE_BALANCE;
+        default:                                    return 0;
+    }
+}
+
+// ============================================================================
+// Constructor
+// ============================================================================
+
+NikonCamera::NikonCamera(PtpIpSession& session)
+    : _session(session)
+    , _ready(false)
+    , _pollFailCount(0)
+    , _host{}
+    , _state{}
+    , _pairState(NikonPairingState::IDLE)
+    , _info{}
+    , _cameraConfirmed(false)
+    , _onPropChanged(nullptr),       _onPropChangedCtx(nullptr)
+    , _onCaptureComplete(nullptr),   _onCaptureCompleteCtx(nullptr)
+    , _onConnectionChanged(nullptr), _onConnectionChangedCtx(nullptr)
+    , _onBracketedShot(nullptr),     _onBracketedShotCtx(nullptr)
+{}
+
+// ============================================================================
+// Lifecycle
+// ============================================================================
+
+CameraResult NikonCamera::_open(const char* host) {
+    strncpy(_host, host, sizeof(_host) - 1);
+    _host[sizeof(_host) - 1] = '\0';
+
+    if (!_session.connect(host)) {
+        // A ZR that already has a paired host refuses any other GUID here
+        if (_session.lastInitFailReason() == PTPIP_INIT_FAIL_REJECTED) {
+            LOG_WARNING("camera refused this host's GUID — not paired");
+            return CAM_E_NOT_PAIRED;
+        }
+        if (_session.lastInitFailReason() == PTPIP_INIT_FAIL_BUSY) return CAM_E_BUSY;
+        LOG_ERROR("handshake failed");
+        return CAM_E_PROTOCOL;
+    }
+    if (!_session.openSession()) {
+        LOG_ERROR("OpenSession failed");
+        _session.disconnect();
+        return CAM_E_PROTOCOL;
+    }
+    return CAM_OK;
+}
+
+CameraResult NikonCamera::begin(const char* host) {
+    _ready = false;
+    _pollFailCount = 0;
+    _state = {};
+    _pairState = NikonPairingState::IDLE;
+
+    CameraResult r = _open(host);
+    if (r != CAM_OK) return r;
+
+    r = _readDeviceInfo();
+    if (r != CAM_OK) {
+        _session.disconnect();
+        return r;
+    }
+    LOG_INFO("Connected to %s %s (firmware %s)", _info.manufacturer, _info.model, _info.deviceVersion);
+
+    // Pairing can't be judged from DeviceInfo: the ZR returns the same restricted
+    // operation list (no property ops) to paired and unpaired hosts alike, yet
+    // serves property reads to a paired host. Reading a property is the test.
+    r = _refreshState(false);
+    if (r != CAM_OK) {
+        if (r == CAM_E_NOT_PAIRED) LOG_WARNING("begin: camera refused property access — host not paired");
+        else                       LOG_ERROR("begin: initial property read failed (%s)", cameraResultStr(r));
+        _session.closeSession();
+        _session.disconnect();
+        return r;
+    }
+
+    // The first DeviceInfo may be the restricted pre-authentication list.
+    // Read it again now that the camera has accepted us; keep the longer one.
+    uint16_t opsBefore = _info.numOperations;
+    if (_readDeviceInfo() == CAM_OK && _info.numOperations != opsBefore) {
+        LOG_INFO("DeviceInfo after authentication: %u operations (was %u)",
+                 _info.numOperations, opsBefore);
+    }
+
+    if (!_extraInit()) {
+        LOG_ERROR("begin: model-specific init failed");
+        _session.closeSession();
+        _session.disconnect();
+        return CAM_E_PROTOCOL;
+    }
+
+    _ready = true;
+    if (_onConnectionChanged) _onConnectionChanged(true, _onConnectionChangedCtx);
+    LOG_INFO("Nikon camera ready");
+    return CAM_OK;
+}
+
+void NikonCamera::end() {
+    bool wasReady = _ready;
+    _ready = false;
+    _state = {};
+    _pairState = NikonPairingState::IDLE;
+    _session.closeSession();
+    _session.disconnect();
+    if (wasReady && _onConnectionChanged) _onConnectionChanged(false, _onConnectionChangedCtx);
+    LOG_INFO("Camera session closed");
+}
+
+CameraResult NikonCamera::reconnect() {
+    if (_host[0] == '\0') {
+        LOG_ERROR("reconnect: begin() was never called on this instance");
+        return CAM_E_NOT_CONNECTED;
+    }
+    char host[sizeof(_host)];
+    strcpy(host, _host);
+    end();
+    return begin(host);
+}
+
+bool NikonCamera::isReady() const {
+    return _ready;
+}
+
+// ============================================================================
+// Pairing
+// Sequence observed on a Nikon ZR; mirrors a known-working client exactly:
+// OpenSession, 0x952B (no other operations first), 0x935A(0x2001), keep the
+// connection open until the user confirms on the camera, close without
+// CloseSession, reconnect with the same identity.
+// ============================================================================
+
+CameraResult NikonCamera::startPairing(const char* host, char* codeOut, size_t codeSize) {
+    if (codeOut == nullptr || codeSize == 0) return CAM_E_INVALID_ARG;
+    codeOut[0] = '\0';
+
+    if (_ready || _pairState != NikonPairingState::IDLE) end();
+
+    CameraResult r = _open(host);
+    if (r == CAM_E_NOT_PAIRED) {
+        LOG_ERROR("startPairing: camera refused this host — it may only accept a new host "
+                  "while it is waiting for a computer connection");
+    }
+    if (r != CAM_OK) return r;
+
+    uint8_t data[16];
+    size_t  dataLen = 0;
+    uint16_t responseCode;
+    if (!_session.dataIn(PTP_OP_NIKON_GET_PAIRING_CODE, nullptr, 0,
+                         data, sizeof(data), dataLen, responseCode)) {
+        _session.disconnect();
+        return CAM_E_PROTOCOL;
+    }
+    if (responseCode != PTP_RSP_OK) {
+        LOG_ERROR("startPairing: GetPairingCode response 0x%04X", responseCode);
+        _session.disconnect();
+        return _mapResponse(responseCode);
+    }
+
+    // Payload: uint32 digit count, then one byte per digit holding its value (not ASCII)
+    uint32_t digits = (dataLen >= 4)
+        ? ((uint32_t)data[0] | ((uint32_t)data[1] << 8) | ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24))
+        : 0;
+    if (digits < 1 || digits > 8 || dataLen < 4 + digits) {
+        LOG_ERROR("startPairing: unexpected pairing code payload (%u bytes, %u digits)",
+                  (unsigned)dataLen, (unsigned)digits);
+        _session.disconnect();
+        return CAM_E_PROTOCOL;
+    }
+    if (codeSize < digits + 1) {
+        _session.disconnect();
+        return CAM_E_INVALID_ARG;
+    }
+    for (uint32_t i = 0; i < digits; i++) {
+        uint8_t d = data[4 + i];
+        if (d > 9) {
+            LOG_ERROR("startPairing: unexpected digit encoding 0x%02X", d);
+            _session.disconnect();
+            return CAM_E_PROTOCOL;
+        }
+        codeOut[i] = (char)('0' + d);
+    }
+    codeOut[digits] = '\0';
+
+    _pairState = NikonPairingState::CODE_SHOWN;
+    LOG_INFO("Pairing code: %s", codeOut);
+    return CAM_OK;
+}
+
+CameraResult NikonCamera::confirmPairing() {
+    if (_pairState != NikonPairingState::CODE_SHOWN) {
+        LOG_ERROR("confirmPairing: call startPairing() first");
+        return CAM_E_NOT_READY;
+    }
+
+    uint16_t responseCode;
+    if (!_session.sendCommand(PTP_OP_NIKON_CONFIRM_PAIRING, responseCode, NIKON_PAIRING_CONFIRM)) {
+        cancelPairing();
+        return CAM_E_PROTOCOL;
+    }
+    if (responseCode != PTP_RSP_OK) {
+        LOG_ERROR("confirmPairing: response 0x%04X", responseCode);
+        cancelPairing();
+        return _mapResponse(responseCode);
+    }
+
+    _pairState = NikonPairingState::AWAITING_CAMERA;
+    _cameraConfirmed = false;
+    LOG_INFO("Pairing accepted — confirm this host on the camera");
+    return CAM_OK;
+}
+
+CameraResult NikonCamera::pollCameraConfirmation() {
+    if (_pairState != NikonPairingState::AWAITING_CAMERA) return CAM_E_NOT_READY;
+    if (_cameraConfirmed) return CAM_OK;
+
+    uint32_t type;
+    uint8_t  payload[32];
+    size_t   len;
+    while (_session.pollEventChannel(type, payload, sizeof(payload), len)) {
+        if (type != PTPIP_TYPE_EVENT || len < 2) continue;
+        uint16_t code = (uint16_t)payload[0] | ((uint16_t)payload[1] << 8);
+        LOG_DEBUG("pairing: event 0x%04X", code);
+        if (code == PTP_EVT_DEVICE_INFO_CHANGED) {
+            _cameraConfirmed = true;
+            LOG_INFO("User confirmed pairing on the camera");
+            return CAM_OK;
+        }
+    }
+    if (!_session.isConnected()) return CAM_E_NOT_CONNECTED;
+    return CAM_E_NOT_READY;
+}
+
+CameraResult NikonCamera::waitForCameraConfirmation(uint32_t timeoutMs) {
+    uint32_t start = millis();
+    while (true) {
+        CameraResult r = pollCameraConfirmation();
+        if (r != CAM_E_NOT_READY || _pairState != NikonPairingState::AWAITING_CAMERA) return r;
+        if (millis() - start >= timeoutMs) return CAM_E_TIMEOUT;
+        delay(50);
+    }
+}
+
+CameraResult NikonCamera::finishPairing() {
+    if (_pairState != NikonPairingState::AWAITING_CAMERA) {
+        LOG_ERROR("finishPairing: call confirmPairing() first");
+        return CAM_E_NOT_READY;
+    }
+    // Log anything the camera sent while the user was confirming — the protocol
+    // around this step is not fully known yet.
+    _serviceEvents(PTPIP_LOG_INFO);
+    _session.disconnect();   // no CloseSession: the camera resets the connection
+    _pairState = NikonPairingState::IDLE;
+    LOG_INFO("Pairing finished — reconnect with begin()");
+    return CAM_OK;
+}
+
+void NikonCamera::cancelPairing() {
+    _session.disconnect();
+    _pairState = NikonPairingState::IDLE;
+}
+
+// ============================================================================
+// DeviceInfo
+// ============================================================================
+
+CameraResult NikonCamera::_readDeviceInfo() {
+    size_t dataLen = 0;
+    uint16_t responseCode;
+    if (!_session.dataIn(PTP_OP_GET_DEVICE_INFO, nullptr, 0,
+                         _dataBuf, sizeof(_dataBuf), dataLen, responseCode)) {
+        return CAM_E_PROTOCOL;
+    }
+    if (responseCode != PTP_RSP_OK) {
+        LOG_ERROR("GetDeviceInfo: response 0x%04X", responseCode);
+        return _mapResponse(responseCode);
+    }
+    if (!ptpParseDeviceInfo(_dataBuf, dataLen, _info)) {
+        LOG_ERROR("GetDeviceInfo: malformed dataset (%u bytes)", (unsigned)dataLen);
+        return CAM_E_PROTOCOL;
+    }
+    if (_info.truncated) LOG_WARNING("GetDeviceInfo: code lists truncated");
+    LOG_DEBUG("DeviceInfo: %u operations, %u events, %u properties",
+              _info.numOperations, _info.numEvents, _info.numProperties);
+    return CAM_OK;
+}
+
+// ============================================================================
+// Polling
+// ============================================================================
+
+void NikonCamera::poll() {
+    if (!_ready) return;
+
+    _serviceEvents(PTPIP_LOG_DEBUG);
+
+    CameraResult r = _refreshState(true);
+    if (r == CAM_E_PROTOCOL || r == CAM_E_TIMEOUT) {
+        _pollFailCount++;
+        LOG_WARNING("poll: property read failed (%u/%u)",
+                    (unsigned)_pollFailCount, (unsigned)NIKON_POLL_FAIL_THRESHOLD);
+        if (_pollFailCount >= NIKON_POLL_FAIL_THRESHOLD) {
+            LOG_ERROR("poll: %u consecutive failures — session dead",
+                      (unsigned)NIKON_POLL_FAIL_THRESHOLD);
+            _ready = false;
+            if (_onConnectionChanged) _onConnectionChanged(false, _onConnectionChangedCtx);
+        }
+        return;
+    }
+    _pollFailCount = 0;
+}
+
+CameraResult NikonCamera::_refreshState(bool fireCallbacks) {
+    for (const NikonPropSpec& p : NIKON_PROPS) {
+        if (!_info.supportsProperty(p.code)) continue;
+
+        uint32_t value = 0;
+        CameraResult r = _getProp(p.code, value);
+        if (r == CAM_E_BUSY) continue;   // try again next poll
+        if (r != CAM_OK) {
+            // An unpaired Nikon refuses property access rather than omitting it
+            if ((r == CAM_E_NOT_SUPPORTED || r == CAM_E_NOT_READY) &&
+                _info.supportsOperation(PTP_OP_NIKON_GET_PAIRING_CODE)) {
+                return CAM_E_NOT_PAIRED;
+            }
+            return r;
+        }
+
+        bool changed = !(_state.known & p.knownBit) || stateField(_state, p.code) != value;
+        setStateField(_state, p.code, value);
+        bool firstRead = !(_state.known & p.knownBit);
+        _state.known |= p.knownBit;
+
+        if (changed && !firstRead && fireCallbacks && p.reportable && _onPropChanged) {
+            _onPropChanged(p.prop, value, _onPropChangedCtx);
+        }
+        if (changed) {
+            PtpIpDiagInstance().record(DIAG_EVT_PROP_CHANGED, (uint8_t)(p.code >> 8), (uint8_t)(p.code & 0xFF),
+                                       (uint8_t)(value & 0xFF));
+        }
+    }
+    return CAM_OK;
+}
+
+void NikonCamera::_serviceEvents(uint8_t logLevel) {
+    uint32_t type;
+    uint8_t  payload[32];
+    size_t   len;
+    while (_session.pollEventChannel(type, payload, sizeof(payload), len)) {
+        if (type == PTPIP_TYPE_EVENT && len >= 2) {
+            uint16_t code = (uint16_t)payload[0] | ((uint16_t)payload[1] << 8);
+            _ptpLog(logLevel, LOG_TAG, "event 0x%04X (%u bytes)", code, (unsigned)len);
+        } else {
+            _ptpLog(logLevel, LOG_TAG, "event channel packet type 0x%02X (%u bytes)",
+                    (unsigned)type, (unsigned)len);
+        }
+    }
+}
+
+// ============================================================================
+// Exposure
+// ============================================================================
+
+CameraResult NikonCamera::setAperture(float fstop) {
+    if (!(fstop > 0.0f)) return CAM_E_INVALID_ARG;
+    return setCameraProperty(CameraProperty::APERTURE, (uint32_t)lroundf(fstop * 100.0f));
+}
+
+CameraResult NikonCamera::setShutterSpeed(float seconds) {
+    if (!(seconds > 0.0f)) return CAM_E_INVALID_ARG;
+    long units = lroundf(seconds * 10000.0f);
+    if (units < 1) return CAM_E_INVALID_ARG;   // faster than 1/10000 s is not representable
+    return setCameraProperty(CameraProperty::SHUTTER_SPEED, (uint32_t)units);
+}
+
+CameraResult NikonCamera::setISO(uint16_t iso) {
+    if (iso == 0) return CAM_E_INVALID_ARG;
+    return setCameraProperty(CameraProperty::ISO, iso);
+}
+
+CameraResult NikonCamera::setExposureCompensation(float ev) {
+    if (ev < -32.0f || ev > 32.0f) return CAM_E_INVALID_ARG;
+    int16_t units = (int16_t)lroundf(ev * 1000.0f);
+    return setCameraProperty(CameraProperty::EXPOSURE_COMPENSATION, (uint16_t)units);
+}
+
+CameraResult NikonCamera::setCameraProperty(CameraProperty prop, uint32_t value) {
+    if (!_ready) return CAM_E_NOT_CONNECTED;
+    uint16_t code = propCodeFor(prop);
+    const NikonPropSpec* spec = findSpec(code);
+    if (spec == nullptr || !_info.supportsProperty(code)) return CAM_E_NOT_SUPPORTED;
+
+    CameraResult r = _setProp(code, value, spec->size);
+    if (r == CAM_OK) {
+        setStateField(_state, code, value);
+        _state.known |= spec->knownBit;
+    }
+    return r;
+}
+
+CameraResult NikonCamera::getCameraProperty(CameraProperty prop, uint32_t& value) {
+    if (!_ready) return CAM_E_NOT_CONNECTED;
+    uint16_t code = propCodeFor(prop);
+    const NikonPropSpec* spec = findSpec(code);
+    if (spec == nullptr || !_info.supportsProperty(code)) return CAM_E_NOT_SUPPORTED;
+
+    if (_state.known & spec->knownBit) {
+        value = stateField(_state, code);
+        return CAM_OK;
+    }
+    return _getProp(code, value);
+}
+
+// ============================================================================
+// Not yet implemented
+// ============================================================================
+
+CameraResult NikonCamera::setAEBPriority(AEBPriority)                { return CAM_E_NOT_SUPPORTED; }
+CameraResult NikonCamera::setAEBSequenceOrder(AEBSequenceOrder)      { return CAM_E_NOT_SUPPORTED; }
+CameraResult NikonCamera::setAEBApertureLimit(float, float)          { return CAM_E_NOT_SUPPORTED; }
+CameraResult NikonCamera::setAEBShutterLimit(float, float)           { return CAM_E_NOT_SUPPORTED; }
+CameraResult NikonCamera::setAEBISOLimit(uint16_t, uint16_t)         { return CAM_E_NOT_SUPPORTED; }
+CameraResult NikonCamera::setAEBStep(float)                          { return CAM_E_NOT_SUPPORTED; }
+CameraResult NikonCamera::takeBracketedSequence(int, float)          { return CAM_E_NOT_SUPPORTED; }
+CameraResult NikonCamera::initiateCapture()                          { return CAM_E_NOT_SUPPORTED; }
+CameraResult NikonCamera::releaseShutter()                           { return CAM_E_NOT_SUPPORTED; }
+
+// ============================================================================
+// Query
+// ============================================================================
+
+const char* NikonCamera::_modeStr(uint16_t program) const {
+    switch (program) {
+        case 0x0001: return "M";
+        case 0x0002: return "P";
+        case 0x0003: return "A";
+        case 0x0004: return "S";
+        case 0x8010: return "AUTO";
+        default:     return "?";
+    }
+}
+
+CameraResult NikonCamera::getSettings(CameraSettings& out) {
+    if (!_ready) return CAM_E_NOT_CONNECTED;
+    if (_state.known == 0) _refreshState(false);
+
+    out = {};
+    out.version              = CAMERA_SETTINGS_VERSION;
+    out.aperture             = NAN;
+    out.shutterSpeed         = NAN;
+    out.exposureCompensation = NAN;
+
+    // FNumber 0 = no lens, or a lens without electronic contacts: leave as unknown
+    if ((_state.known & NIKON_KNOWN_FNUMBER) && _state.fNumber != 0) out.aperture = _state.fNumber / 100.0f;
+    if (_state.known & NIKON_KNOWN_EXPOSURE) out.shutterSpeed = _state.exposureTime / 10000.0f;
+    if (_state.known & NIKON_KNOWN_ISO)      out.iso = _state.iso;
+    if (_state.known & NIKON_KNOWN_BIAS)     out.exposureCompensation = _state.exposureBias / 1000.0f;
+    if (_state.known & NIKON_KNOWN_PROGRAM)  out.mode = _modeStr(_state.program);
+    return CAM_OK;
+}
+
+void NikonCamera::dumpDiagnostics(Print& out) {
+    PtpIpDiagInstance().dump(out);
+}
+
+// ============================================================================
+// Callbacks
+// ============================================================================
+
+void NikonCamera::setOnPropChanged(PropChangedCb cb, void* ctx) {
+    _onPropChanged    = cb;
+    _onPropChangedCtx = ctx;
+}
+
+void NikonCamera::setOnCaptureComplete(CaptureCompleteCb cb, void* ctx) {
+    _onCaptureComplete    = cb;
+    _onCaptureCompleteCtx = ctx;
+}
+
+void NikonCamera::setOnConnectionChanged(ConnectionChangedCb cb, void* ctx) {
+    _onConnectionChanged    = cb;
+    _onConnectionChangedCtx = ctx;
+}
+
+void NikonCamera::setOnBracketedShotComplete(BracketedShotCompleteCb cb, void* ctx) {
+    _onBracketedShot    = cb;
+    _onBracketedShotCtx = ctx;
+}
+
+// ============================================================================
+// Property helpers
+// ============================================================================
+
+CameraResult NikonCamera::_getProp(uint16_t propCode, uint32_t& value) {
+    uint8_t  data[8];
+    size_t   dataLen = 0;
+    uint16_t responseCode;
+    uint32_t param = propCode;
+    if (!_session.dataIn(PTP_OP_GET_DEVICE_PROP, &param, 1,
+                         data, sizeof(data), dataLen, responseCode)) {
+        return CAM_E_PROTOCOL;
+    }
+    if (responseCode != PTP_RSP_OK) {
+        LOG_DEBUG("GetDevicePropValue 0x%04X: response 0x%04X", propCode, responseCode);
+        return _mapResponse(responseCode);
+    }
+    if (dataLen == 0 || dataLen > 4) {
+        LOG_ERROR("GetDevicePropValue 0x%04X: unexpected %u-byte value", propCode, (unsigned)dataLen);
+        return CAM_E_PROTOCOL;
+    }
+    value = 0;
+    for (size_t i = 0; i < dataLen; i++) value |= (uint32_t)data[i] << (8 * i);
+    return CAM_OK;
+}
+
+CameraResult NikonCamera::_setProp(uint16_t propCode, uint32_t value, uint8_t size) {
+    uint8_t data[4];
+    for (uint8_t i = 0; i < size; i++) data[i] = (uint8_t)(value >> (8 * i));
+    uint16_t responseCode;
+    uint32_t param = propCode;
+    if (!_session.dataOut(PTP_OP_SET_DEVICE_PROP, &param, 1, data, size, responseCode)) {
+        return CAM_E_PROTOCOL;
+    }
+    if (responseCode != PTP_RSP_OK) {
+        LOG_WARNING("SetDevicePropValue 0x%04X = %u: response 0x%04X",
+                    propCode, (unsigned)value, responseCode);
+    }
+    return _mapResponse(responseCode);
+}
+
+CameraResult NikonCamera::_mapResponse(uint16_t responseCode) const {
+    switch (responseCode) {
+        case PTP_RSP_OK:                        return CAM_OK;
+        case PTP_RSP_DEVICE_BUSY:               return CAM_E_BUSY;
+        case PTP_RSP_INVALID_DEVICE_PROP_VALUE: return CAM_E_INVALID_ARG;
+        case PTP_RSP_OP_NOT_SUPPORTED:
+        case PTP_RSP_PROP_NOT_SUPPORTED:        return CAM_E_NOT_SUPPORTED;
+        case PTP_RSP_ACCESS_DENIED:             return CAM_E_NOT_READY;
+        default:                                return CAM_E_PROTOCOL;
+    }
+}

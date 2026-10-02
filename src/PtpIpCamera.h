@@ -6,6 +6,7 @@
 //   ICameraControl   — abstract interface your application depends on
 //   CanonCamera      — Canon EOS base class
 //   Canon5DMkIV      — Canon EOS 5D Mark IV concrete class
+//   NikonCamera      — Nikon (incl. Z-series WiFi PIN pairing)
 //   SimCamera        — simulated camera for testing without hardware
 //   PtpIpLog         — logging callback registration
 //
@@ -14,6 +15,7 @@
 #include "ICameraControl.h"
 #include "CanonCamera.h"
 #include "Canon5DMkIV.h"
+#include "NikonCamera.h"
 #include "SimCamera.h"
 #include "PtpIpTransport.h"
 #include "PtpIpSession.h"

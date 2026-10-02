@@ -11,6 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PtpIpSession::setHostIdentity()` sets the GUID and host name sent in
   Init_Command_Request, with `hostGuid()` / `hostName()` accessors. Needed for
   cameras that remember a paired host by identity. The default identity is unchanged.
+- `NikonCamera`: Nikon PTP/IP control via standard PTP exposure properties, with
+  WiFi PIN pairing for newer Z bodies (`startPairing()` / `confirmPairing()` /
+  `finishPairing()` / `cancelPairing()`), with `pollCameraConfirmation()` /
+  `waitForCameraConfirmation()` to detect the user confirming on the camera.
+  Capture and AEB not yet implemented.
+- `CAM_E_NOT_PAIRED` result code.
+- `PtpDeviceInfo` / `ptpParseDeviceInfo()`: header-only parser for the DeviceInfo dataset.
+- `PtpIpSession::dataIn()` / `dataOut()`: transactions using the PTP/IP specification's
+  packet types (Start_Data 0x09, Data 0x0A, End_Data 0x0C), any payload size, up to
+  5 parameters. Existing Canon transactions are unchanged.
+- `PtpIpSession::closeSession()` and `pollEventChannel()` (answers Probe_Request
+  keep-alives); `PtpIpTransport::availableEvent()`.
 
 ### Changed
 - Init_Fail "rejected" log message no longer assumes a Canon camera.

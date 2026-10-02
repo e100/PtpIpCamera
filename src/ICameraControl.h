@@ -32,7 +32,8 @@ enum CameraResult {
     CAM_E_BUSY,           ///< Camera busy — maps to PTP DEVICE_BUSY (0x2019).
     CAM_E_PROTOCOL,       ///< Unexpected PTP response or packet format error.
     CAM_E_NOT_SUPPORTED,  ///< Camera does not support this operation.
-    CAM_E_OUT_OF_RANGE    ///< EV shift cannot be achieved within configured AEB limits.
+    CAM_E_OUT_OF_RANGE,   ///< EV shift cannot be achieved within configured AEB limits.
+    CAM_E_NOT_PAIRED      ///< Camera requires this host to be paired first (e.g. Nikon WiFi PIN pairing).
 };
 
 /**
@@ -51,6 +52,7 @@ inline const char* cameraResultStr(CameraResult r) {
         case CAM_E_PROTOCOL:      return "protocol error";
         case CAM_E_NOT_SUPPORTED: return "not supported";
         case CAM_E_OUT_OF_RANGE:  return "out of range";
+        case CAM_E_NOT_PAIRED:    return "not paired";
         default:                  return "unknown error";
     }
 }

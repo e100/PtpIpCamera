@@ -78,6 +78,7 @@ PtpIpSession::PtpIpSession(PtpIpTransport& transport)
     , _transactionId(0)
     , _connected(false)
     , _sessionOpen(false)
+    , _initFailReason(0)
 {
     memcpy(_hostGuid, DEFAULT_HOST_GUID, PTPIP_GUID_SIZE);
     strcpy(_hostName, DEFAULT_HOST_NAME);
@@ -115,6 +116,8 @@ bool PtpIpSession::setHostIdentity(const uint8_t guid[PTPIP_GUID_SIZE], const ch
 }
 
 bool PtpIpSession::connect(const char* host) {
+    _initFailReason = 0;
+
     // Step 1: open command channel only
     if (!_transport.connectCommand(host, PTPIP_PORT)) {
         return false;
@@ -220,11 +223,12 @@ bool PtpIpSession::_recvInitCommandAck(uint32_t& connectionNumber) {
     // Init_Fail (0x05): camera rejected the connection
     if (type == 0x00000005) {
         uint32_t errorCode = (n >= 12) ? readU32LE(buf, 8) : 0;
+        _initFailReason = errorCode;
         const char* reason = "unknown";
-        if      (errorCode == 0x00000001) reason = "Rejected — camera refused this host; it may need to be in its "
-                                                   "remote-control waiting mode (e.g. Canon EOS Utility mode)";
-        else if (errorCode == 0x00000002) reason = "Busy — camera is already connected to another client";
-        else if (errorCode == 0x00000003) reason = "Unspecified error";
+        if      (errorCode == PTPIP_INIT_FAIL_REJECTED)    reason = "Rejected — camera refused this host (not paired, or "
+                                                                    "not waiting for a connection, e.g. Canon EOS Utility mode)";
+        else if (errorCode == PTPIP_INIT_FAIL_BUSY)        reason = "Busy — camera is already connected to another client";
+        else if (errorCode == PTPIP_INIT_FAIL_UNSPECIFIED) reason = "Unspecified error";
         LOG_ERROR("Camera sent Init_Fail (errorCode=0x%08X): %s", (unsigned)errorCode, reason);
         return false;
     }
@@ -853,6 +857,256 @@ bool PtpIpSession::getCanonEventData(uint8_t* buf, size_t maxLen, size_t& dataLe
         LOG_DEBUG("getCanonEventData: txId=%u dataLen=%u OK", (unsigned)txId, (unsigned)dataLen);
     }
 
+    return true;
+}
+
+// ----------------------------------------------------------------------------
+// closeSession — CloseSession (0x1003), no parameters
+// ----------------------------------------------------------------------------
+bool PtpIpSession::closeSession() {
+    if (!_sessionOpen) return true;
+    uint16_t responseCode;
+    bool ok = sendCommand(PTP_OP_CLOSE_SESSION, responseCode);
+    _sessionOpen = false;
+    if (!ok) return false;
+    if (responseCode != PTP_RSP_OK) {
+        LOG_WARNING("closeSession: response 0x%04X", responseCode);
+        return false;
+    }
+    LOG_INFO("Session closed");
+    return true;
+}
+
+// ----------------------------------------------------------------------------
+// Spec-compliant transactions (CIPA DC-005)
+//
+// Operation Request (type 0x06):
+//   [0..3]   length = 18 + 4 * numParams
+//   [4..7]   type = 0x06
+//   [8..11]  DataPhaseInfo: 1 = no data or data in, 2 = data out
+//   [12..13] OperationCode
+//   [14..17] TransactionID
+//   [18..]   Parameters (uint32 LE each)
+//
+// Start_Data (type 0x09): [8..11] TransactionID, [12..19] TotalDataLength (uint64 LE)
+// Data       (type 0x0A): [8..11] TransactionID, [12..] payload chunk
+// End_Data   (type 0x0C): [8..11] TransactionID, [12..] final payload chunk
+// Response   (type 0x07): [8..9] ResponseCode, [10..13] TransactionID, [14..] params
+// ----------------------------------------------------------------------------
+bool PtpIpSession::_sendRequest(uint16_t opCode, uint32_t txId, uint32_t dataPhase,
+                                 const uint32_t* params, uint8_t numParams) {
+    if (numParams > PTP_MAX_PARAMS) {
+        LOG_ERROR("_sendRequest: too many parameters (%u)", (unsigned)numParams);
+        return false;
+    }
+
+    uint8_t buf[18 + 4 * PTP_MAX_PARAMS];
+    size_t off = 0;
+    writeU32LE(buf, off, 18 + (uint32_t)numParams * 4);
+    writeU32LE(buf, off, PTPIP_PKT_CMD_REQUEST);
+    writeU32LE(buf, off, dataPhase);
+    writeU16LE(buf, off, opCode);
+    writeU32LE(buf, off, txId);
+    for (uint8_t i = 0; i < numParams; i++) {
+        writeU32LE(buf, off, params[i]);
+    }
+
+    PtpIpDiagInstance().record(DIAG_EVT_OP_SENT, (uint8_t)(opCode >> 8), (uint8_t)(opCode & 0xFF), numParams);
+    logHexDump("SEND Operation_Request", buf, off);
+    if (!_transport.sendCommand(buf, off)) {
+        LOG_ERROR("_sendRequest: failed to send opCode=0x%04X", opCode);
+        return false;
+    }
+    return true;
+}
+
+bool PtpIpSession::_recvExactCommand(uint8_t* buf, size_t len) {
+    return _transport.recvCommand(buf, len) == len;
+}
+
+bool PtpIpSession::_discardCommand(size_t len) {
+    uint8_t scratch[64];
+    while (len > 0) {
+        size_t chunk = len < sizeof(scratch) ? len : sizeof(scratch);
+        if (!_recvExactCommand(scratch, chunk)) return false;
+        len -= chunk;
+    }
+    return true;
+}
+
+bool PtpIpSession::_recvResponse(uint32_t txId, uint16_t& responseCode) {
+    uint8_t resp[14 + 4 * PTP_MAX_PARAMS];
+    size_t n = _recvPacketCommand(resp, sizeof(resp));
+    if (n == 0) return false;
+
+    logHexDump("RECV Operation_Response", resp, n);
+    if (!_parseResponsePkt(resp, n, responseCode)) return false;
+
+    uint32_t respTxId = readU32LE(resp, 10);
+    if (respTxId != txId) {
+        LOG_ERROR("_recvResponse: transaction mismatch (expected %u, got %u)",
+                  (unsigned)txId, (unsigned)respTxId);
+        return false;
+    }
+
+    PtpIpDiagInstance().record(DIAG_EVT_RESP_RECV, (uint8_t)(responseCode >> 8), (uint8_t)(responseCode & 0xFF), 0);
+    return true;
+}
+
+bool PtpIpSession::dataIn(uint16_t opCode, const uint32_t* params, uint8_t numParams,
+                           uint8_t* data, size_t maxDataLen, size_t& dataLen,
+                           uint16_t& responseCode) {
+    dataLen = 0;
+    if (!_sessionOpen) {
+        LOG_ERROR("dataIn: session not open");
+        return false;
+    }
+
+    uint32_t txId = _nextTransactionId();
+    if (!_sendRequest(opCode, txId, 1, params, numParams)) return false;
+
+    bool started = false;
+    while (true) {
+        uint8_t hdr[8];
+        if (!_recvExactCommand(hdr, sizeof(hdr))) {
+            LOG_ERROR("dataIn: failed to read packet header (opCode=0x%04X)", opCode);
+            return false;
+        }
+        uint32_t pktLen = readU32LE(hdr, 0);
+        uint32_t type   = readU32LE(hdr, 4);
+
+        if (type == PTPIP_PKT_CMD_RESPONSE) {
+            // No data phase — the camera answered straight away (usually an error).
+            // Put the header back in front of the remaining bytes and parse it.
+            uint8_t resp[14 + 4 * PTP_MAX_PARAMS];
+            if (pktLen < 14 || pktLen > sizeof(resp)) {
+                LOG_ERROR("dataIn: bad response length %u", (unsigned)pktLen);
+                return false;
+            }
+            memcpy(resp, hdr, sizeof(hdr));
+            if (!_recvExactCommand(resp + 8, pktLen - 8)) return false;
+            if (!_parseResponsePkt(resp, pktLen, responseCode)) return false;
+            PtpIpDiagInstance().record(DIAG_EVT_RESP_RECV, (uint8_t)(responseCode >> 8), (uint8_t)(responseCode & 0xFF), 0);
+            LOG_DEBUG("dataIn: opCode=0x%04X response=0x%04X (no data)", opCode, responseCode);
+            return true;
+        }
+
+        if (type == PTPIP_TYPE_START_DATA) {
+            if (pktLen < 20) {
+                LOG_ERROR("dataIn: Start_Data too short (%u bytes)", (unsigned)pktLen);
+                return false;
+            }
+            uint8_t body[12];
+            if (!_recvExactCommand(body, sizeof(body))) return false;
+            if (!_discardCommand(pktLen - 20)) return false;
+            LOG_DEBUG("dataIn: Start_Data, announced %u bytes", (unsigned)readU32LE(body, 4));
+            started = true;
+            continue;
+        }
+
+        if (type == PTPIP_TYPE_DATA || type == PTPIP_TYPE_END_DATA) {
+            if (!started || pktLen < 12) {
+                LOG_ERROR("dataIn: unexpected data packet (type=0x%02X len=%u)",
+                          (unsigned)type, (unsigned)pktLen);
+                return false;
+            }
+            uint8_t tx[4];
+            if (!_recvExactCommand(tx, sizeof(tx))) return false;
+            if (readU32LE(tx, 0) != txId) {
+                LOG_ERROR("dataIn: data packet transaction mismatch");
+                return false;
+            }
+
+            size_t chunk = pktLen - 12;
+            size_t room  = maxDataLen - dataLen;
+            size_t keep  = chunk < room ? chunk : room;
+            if (keep > 0 && !_recvExactCommand(data + dataLen, keep)) return false;
+            dataLen += keep;
+            if (keep < chunk) {
+                LOG_WARNING("dataIn: payload exceeds %u-byte buffer, discarding %u bytes",
+                            (unsigned)maxDataLen, (unsigned)(chunk - keep));
+                if (!_discardCommand(chunk - keep)) return false;
+            }
+
+            if (type == PTPIP_TYPE_END_DATA) break;
+            continue;
+        }
+
+        LOG_ERROR("dataIn: unexpected packet type 0x%08X", (unsigned)type);
+        return false;
+    }
+
+    if (!_recvResponse(txId, responseCode)) return false;
+    LOG_DEBUG("dataIn: opCode=0x%04X response=0x%04X dataLen=%u",
+              opCode, responseCode, (unsigned)dataLen);
+    return true;
+}
+
+bool PtpIpSession::dataOut(uint16_t opCode, const uint32_t* params, uint8_t numParams,
+                            const uint8_t* data, size_t dataLen,
+                            uint16_t& responseCode) {
+    if (!_sessionOpen) {
+        LOG_ERROR("dataOut: session not open");
+        return false;
+    }
+
+    uint32_t txId = _nextTransactionId();
+    if (!_sendRequest(opCode, txId, 2, params, numParams)) return false;
+
+    uint8_t buf[20];
+    size_t off = 0;
+    writeU32LE(buf, off, 20);
+    writeU32LE(buf, off, PTPIP_TYPE_START_DATA);
+    writeU32LE(buf, off, txId);
+    writeU64LE(buf, off, (uint64_t)dataLen);
+    logHexDump("SEND Start_Data", buf, off);
+    if (!_transport.sendCommand(buf, off)) return false;
+
+    off = 0;
+    writeU32LE(buf, off, 12 + (uint32_t)dataLen);
+    writeU32LE(buf, off, PTPIP_TYPE_END_DATA);
+    writeU32LE(buf, off, txId);
+    logHexDump("SEND End_Data header", buf, off);
+    if (!_transport.sendCommand(buf, off)) return false;
+    if (dataLen > 0 && !_transport.sendCommand(data, dataLen)) return false;
+
+    if (!_recvResponse(txId, responseCode)) return false;
+    LOG_DEBUG("dataOut: opCode=0x%04X response=0x%04X", opCode, responseCode);
+    return true;
+}
+
+bool PtpIpSession::pollEventChannel(uint32_t& type, uint8_t* payload, size_t maxLen,
+                                     size_t& payloadLen) {
+    payloadLen = 0;
+    if (_transport.availableEvent() < (int)PTPIP_HEADER_SIZE) return false;
+
+    uint8_t hdr[8];
+    if (_transport.recvEvent(hdr, sizeof(hdr), 1000) != sizeof(hdr)) return false;
+    uint32_t pktLen = readU32LE(hdr, 0);
+    type = readU32LE(hdr, 4);
+    if (pktLen < 8) return false;
+
+    size_t body = pktLen - 8;
+    size_t keep = body < maxLen ? body : maxLen;
+    if (keep > 0 && _transport.recvEvent(payload, keep, 1000) != keep) return false;
+    for (size_t left = body - keep; left > 0; ) {
+        uint8_t scratch[32];
+        size_t chunk = left < sizeof(scratch) ? left : sizeof(scratch);
+        if (_transport.recvEvent(scratch, chunk, 1000) != chunk) return false;
+        left -= chunk;
+    }
+    payloadLen = keep;
+    logHexDump("RECV Event_Channel", payload, payloadLen);
+
+    // Keep-alive: the camera may probe the host; answer so it doesn't drop us.
+    if (type == PTPIP_TYPE_PROBE_REQUEST) {
+        uint8_t reply[8];
+        size_t off = 0;
+        writeU32LE(reply, off, 8);
+        writeU32LE(reply, off, PTPIP_TYPE_PROBE_RESPONSE);
+        _transport.sendEvent(reply, off);
+        LOG_DEBUG("pollEventChannel: answered Probe_Request");
+    }
     return true;
 }
 

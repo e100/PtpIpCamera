@@ -35,6 +35,10 @@ public:
     void disconnect();
     bool isConnected();
 
+    // Reason code from the camera's Init_Fail packet if the last connect() was
+    // refused during the handshake (PTPIP_INIT_FAIL_*), otherwise 0.
+    uint32_t lastInitFailReason() const { return _initFailReason; }
+
     // Send OpenSession (0x1002) with TransactionID=0, SessionID=1.
     // TransactionID counter is reset so the next sendCommand uses ID=1.
     bool openSession();
@@ -75,6 +79,34 @@ public:
     // On success returns true and sets dataLen to the number of payload bytes received.
     bool getCanonEventData(uint8_t* buf, size_t maxLen, size_t& dataLen);
 
+    // Send CloseSession (0x1003). The sockets stay open; call disconnect() after.
+    bool closeSession();
+
+    // -------------------------------------------------------------------------
+    // Spec-compliant transactions (PTP/IP packet types per CIPA DC-005).
+    // Used by NikonCamera. Up to PTP_MAX_PARAMS parameters.
+    // Return false on a transport or framing error; otherwise true with the
+    // camera's response code in responseCode (which may still be an error).
+    // -------------------------------------------------------------------------
+
+    // Data-in transaction: Start_Data, any number of Data packets, End_Data,
+    // then the response. Payload beyond maxDataLen is read and discarded;
+    // dataLen is the number of bytes stored. If the camera answers with a
+    // response and no data phase, dataLen is 0.
+    bool dataIn(uint16_t opCode, const uint32_t* params, uint8_t numParams,
+                uint8_t* data, size_t maxDataLen, size_t& dataLen,
+                uint16_t& responseCode);
+
+    // Data-out transaction: Start_Data then End_Data carrying data, then the response.
+    bool dataOut(uint16_t opCode, const uint32_t* params, uint8_t numParams,
+                 const uint8_t* data, size_t dataLen,
+                 uint16_t& responseCode);
+
+    // Non-blocking read of one packet from the event channel.
+    // Returns true and fills type/payload if a complete packet was read.
+    // Payload beyond maxLen is discarded; payloadLen is the number of bytes stored.
+    bool pollEventChannel(uint32_t& type, uint8_t* payload, size_t maxLen, size_t& payloadLen);
+
     // Non-blocking poll for an event packet on the command channel.
     // Canon sends capture events on the command channel, not the event channel.
     // Returns true and fills eventCode + param1 if a full event packet is ready.
@@ -85,6 +117,7 @@ private:
     uint32_t        _transactionId;
     bool            _connected;
     bool            _sessionOpen;
+    uint32_t        _initFailReason;
     uint8_t         _hostGuid[PTPIP_GUID_SIZE];
     char            _hostName[PTPIP_MAX_HOST_NAME_LEN + 1];
 
@@ -103,6 +136,13 @@ private:
     // Returns total bytes read, or 0 on error.
     size_t _recvPacketCommand(uint8_t* buf, size_t maxLen, uint32_t timeoutMs = 5000);
     size_t _recvPacketEvent(uint8_t* buf, size_t maxLen, uint32_t timeoutMs = 5000);
+
+    // Helpers for dataIn()/dataOut()
+    bool _sendRequest(uint16_t opCode, uint32_t txId, uint32_t dataPhase,
+                      const uint32_t* params, uint8_t numParams);
+    bool _recvResponse(uint32_t txId, uint16_t& responseCode);
+    bool _recvExactCommand(uint8_t* buf, size_t len);
+    bool _discardCommand(size_t len);
 
     // Parse a Command Response packet and extract the response code.
     bool _parseResponsePkt(const uint8_t* buf, size_t len, uint16_t& responseCode);

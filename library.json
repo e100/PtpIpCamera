@@ -2,7 +2,7 @@
   "name": "PtpIpCamera",
   "version": "1.0.0",
   "description": "Wireless PTP/IP camera control for Arduino. Supports Canon EOS cameras with WiFi — set exposure, trigger capture, AEB bracketing, and automatic state sync via background polling.",
-  "keywords": ["camera", "canon", "ptp", "ptpip", "wifi", "photography", "remote", "shutter", "bracketing"],
+  "keywords": ["camera", "canon", "nikon", "ptp", "ptpip", "wifi", "photography", "remote", "shutter", "bracketing"],
   "repository": {
     "type": "git",
     "url": "https://github.com/seemantadutta/PtpIpCamera"

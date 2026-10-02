@@ -64,6 +64,10 @@ int PtpIpTransport::availableCommand() {
     return _cmdSocket.available();
 }
 
+int PtpIpTransport::availableEvent() {
+    return _evtSocket.available();
+}
+
 size_t PtpIpTransport::_recvFull(WiFiClient& sock, uint8_t* buf, size_t len, uint32_t timeoutMs) {
     size_t received = 0;
     uint32_t start = millis();

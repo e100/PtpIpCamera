@@ -243,6 +243,68 @@ When a user reports a bug you can't reproduce:
 
 ---
 
+## Nikon Cameras
+
+`NikonCamera` controls Nikon bodies over PTP/IP using the standard PTP exposure properties (aperture, shutter speed, ISO, exposure compensation, white balance). Values are in natural units through the typed setters, or raw PTP units through `setCameraProperty()`.
+
+| Model | Status |
+|---|---|
+| Nikon ZR | Pairing protocol verified on camera; library pending on-device testing |
+| Other Nikon Z with WiFi | Untested — likely the same pairing flow |
+
+Capture, AEB and video recording are not implemented yet and return `CAM_E_NOT_SUPPORTED`.
+
+### Camera setup (ZR)
+
+Network → Connect to computer, connection type **Camera Control**. Create a profile with **Direct connection to computer**: the camera becomes the access point at `192.168.1.1`.
+
+### WiFi pairing
+
+Newer Nikon Z bodies offer PIN pairing over WiFi. The camera remembers a paired host by its GUID, so give each device a persistent identity with `setHostIdentity()` (see [Host Identity](#host-identity)) before every `begin()`. Keep the host name stable too, even though the ZR does not appear to check it.
+
+Observed on a ZR (firmware 1.11) in *Direct connection to computer* (access point) mode:
+
+- Pairing belongs to the camera's network profile: each profile holds one paired GUID, and only the active profile's GUID is accepted. To use several devices, create a profile per device and switch profiles on the camera.
+- Once the active profile has a paired host, the camera refuses any other GUID during the PTP/IP handshake (Init_Fail, reason 1). `begin()` returns `CAM_E_NOT_PAIRED`, and pairing a new host requires a profile with no pairing.
+- A paired GUID is accepted with a different host name.
+- While the active profile has no pairing, any GUID is accepted and could read properties.
+- DeviceInfo is not a pairing indicator: paired and unpaired hosts get the same restricted operation list.
+
+The camera advertises its state over mDNS as a `_ptp._tcp` service (e.g. `ZR_3010360`, port 15740). The `apps` TXT record shows whether the active profile is paired:
+
+| `apps` | Meaning | What to do |
+|---|---|---|
+| `PAIR` | Active profile has no paired host | Run the pairing sequence below |
+| `$DSC` | Active profile is paired | `begin()`; `CAM_E_NOT_PAIRED` means another device owns this profile — switch or create a profile on the camera |
+
+Other TXT records seen on a ZR: `ver=1`, `seq` (changes when pairing completes), `pid=458`, `vid=A`, and `guid` (the camera's own identity, beginning with Nikon's USB vendor ID `04b0`). The library does not query mDNS itself; use your platform's mDNS client (e.g. `ESPmDNS` on ESP32).
+
+Reports for other bodies (e.g. a Z8 in station mode) show the session accepted but property access refused until pairing; `begin()` also returns `CAM_E_NOT_PAIRED` in that case.
+
+Pairing is a one-time sequence:
+
+```cpp
+NikonCamera camera(session);
+
+if (camera.begin(CAMERA_IP) == CAM_E_NOT_PAIRED) {
+    char code[9];
+    camera.startPairing(CAMERA_IP, code, sizeof(code));
+    // Show `code`. The camera shows the same code; the user checks they match.
+    camera.confirmPairing();
+    // The camera now asks the user to confirm this host. It sends an event when
+    // they do; from loop() you can call pollCameraConfirmation() instead.
+    camera.waitForCameraConfirmation(60000);
+    camera.finishPairing();
+    // Confirming can restart the camera's WiFi network: reconnect WiFi if
+    // needed, then retry begin() for up to a minute.
+    camera.begin(CAMERA_IP);   // succeeds from now on with the same identity
+}
+```
+
+Call `cancelPairing()` to abandon pairing at any step. Under the hood, `startPairing()` calls vendor operation `0x952B` (returns the code), `confirmPairing()` calls `0x935A` with parameter `0x2001`, and the camera signals the user's on-camera confirmation with event `0x4008` (DeviceInfoChanged).
+
+---
+
 ## Adding a New Canon Model
 
 If you have a Canon camera that is not yet supported, here is how to add it. The base class `CanonCamera` handles all standard Canon EOS PTP/IP behaviour. You only override what actually differs.

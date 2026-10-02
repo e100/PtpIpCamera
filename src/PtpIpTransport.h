@@ -39,6 +39,9 @@ public:
     // Non-blocking: returns number of bytes available on the command channel.
     int availableCommand();
 
+    // Non-blocking: returns number of bytes available on the event channel.
+    int availableEvent();
+
 private:
     WiFiClient _cmdSocket;
     WiFiClient _evtSocket;

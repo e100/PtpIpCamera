@@ -31,10 +31,32 @@ static constexpr uint32_t PTPIP_PKT_DATA_END            = 0x0000000C;
 // Canon vendor extension: Start_Data uses type 0x09 instead of 0x0A
 static constexpr uint32_t PTPIP_PKT_CANON_DATA_START    = 0x00000009;
 
+// Packet types as numbered by the PTP/IP specification (CIPA DC-005).
+// The constants above are used by the Canon code paths and are numbered
+// differently (the spec's Start_Data is 0x09, Data is 0x0A, Event is 0x08).
+// New code — PtpIpSession::dataIn()/dataOut() and NikonCamera — uses these.
+static constexpr uint32_t PTPIP_TYPE_EVENT              = 0x00000008;
+static constexpr uint32_t PTPIP_TYPE_START_DATA         = 0x00000009;
+static constexpr uint32_t PTPIP_TYPE_DATA               = 0x0000000A;
+static constexpr uint32_t PTPIP_TYPE_CANCEL             = 0x0000000B;
+static constexpr uint32_t PTPIP_TYPE_END_DATA           = 0x0000000C;
+static constexpr uint32_t PTPIP_TYPE_PROBE_REQUEST      = 0x0000000D;
+static constexpr uint32_t PTPIP_TYPE_PROBE_RESPONSE     = 0x0000000E;
+
+// Init_Fail reason codes (payload of packet type 0x05)
+static constexpr uint32_t PTPIP_INIT_FAIL_REJECTED      = 0x00000001;  // host refused (e.g. not paired)
+static constexpr uint32_t PTPIP_INIT_FAIL_BUSY          = 0x00000002;
+static constexpr uint32_t PTPIP_INIT_FAIL_UNSPECIFIED   = 0x00000003;
+
+// Maximum number of parameters in a PTP operation request
+static constexpr uint8_t  PTP_MAX_PARAMS                = 5;
+
 // ----------------------------------------------------------------------------
 // PTP Operation Codes
 // ----------------------------------------------------------------------------
+static constexpr uint16_t PTP_OP_GET_DEVICE_INFO  = 0x1001;
 static constexpr uint16_t PTP_OP_OPEN_SESSION     = 0x1002;
+static constexpr uint16_t PTP_OP_CLOSE_SESSION    = 0x1003;
 static constexpr uint16_t PTP_OP_GET_DEVICE_PROP  = 0x1015;
 static constexpr uint16_t PTP_OP_SET_DEVICE_PROP  = 0x1016;
 static constexpr uint16_t PTP_OP_INITIATE_CAPTURE = 0x100E;
@@ -46,6 +68,11 @@ static constexpr uint16_t PTP_OP_CANON_SET_EVENT     = 0x9115;
 static constexpr uint16_t PTP_OP_CANON_GET_EVENT     = 0x9116;  // poll camera event queue
 static constexpr uint16_t PTP_OP_CANON_START_CAPTURE = 0x9128;  // half-press(focus) or full-press(release)
 static constexpr uint16_t PTP_OP_CANON_STOP_CAPTURE  = 0x9129;  // release full-press or half-press
+
+// Nikon proprietary — WiFi PIN pairing (Nikon Z bodies, e.g. ZR, Z8)
+static constexpr uint16_t PTP_OP_NIKON_GET_PAIRING_CODE = 0x952B;  // data in: uint32 digit count + one byte per digit (0-9)
+static constexpr uint16_t PTP_OP_NIKON_CONFIRM_PAIRING  = 0x935A;  // param1 = NIKON_PAIRING_CONFIRM
+static constexpr uint32_t NIKON_PAIRING_CONFIRM         = 0x00002001;
 
 // Canon GetEventData segment event types (uint32 in the payload)
 static constexpr uint32_t CANON_EVT_PROP_CHANGED     = 0x0000c189; // property value changed
@@ -64,21 +91,30 @@ static constexpr uint32_t CANON_CAPTURE_PHASE_RELEASE = 0x00000002; // shutter /
 static constexpr uint16_t PTP_RSP_OK             = 0x2001;
 static constexpr uint16_t PTP_RSP_DEVICE_BUSY    = 0x2019;
 static constexpr uint16_t PTP_RSP_INCOMPLETE_TX  = 0x2007;
+static constexpr uint16_t PTP_RSP_OP_NOT_SUPPORTED          = 0x2005;
+static constexpr uint16_t PTP_RSP_PROP_NOT_SUPPORTED        = 0x200A;
+static constexpr uint16_t PTP_RSP_ACCESS_DENIED             = 0x200F;
+static constexpr uint16_t PTP_RSP_INVALID_DEVICE_PROP_VALUE = 0x201C;
 
 // ----------------------------------------------------------------------------
 // PTP Event Codes
 // ----------------------------------------------------------------------------
 static constexpr uint16_t PTP_EVT_OBJECT_ADDED       = 0x4002;
 static constexpr uint16_t PTP_EVT_CAPTURE_COMPLETE   = 0x400D;
+static constexpr uint16_t PTP_EVT_DEVICE_INFO_CHANGED = 0x4008;  // Nikon: sent when the user confirms pairing on the camera
 
 // ----------------------------------------------------------------------------
 // PTP Device Property Codes
 // ----------------------------------------------------------------------------
 
 // Standard PTP property codes (used for GetDevicePropValue reads)
-static constexpr uint16_t PTP_PROP_APERTURE      = 0x5007;
-static constexpr uint16_t PTP_PROP_SHUTTER_SPEED = 0x500D;
-static constexpr uint16_t PTP_PROP_ISO           = 0x500F;
+// Data types are fixed by the PTP standard.
+static constexpr uint16_t PTP_PROP_WHITE_BALANCE = 0x5005;  // UINT16 enum
+static constexpr uint16_t PTP_PROP_APERTURE      = 0x5007;  // UINT16, f-number * 100
+static constexpr uint16_t PTP_PROP_SHUTTER_SPEED = 0x500D;  // UINT32, seconds * 10000
+static constexpr uint16_t PTP_PROP_EXPOSURE_PROGRAM = 0x500E;  // UINT16 enum
+static constexpr uint16_t PTP_PROP_ISO           = 0x500F;  // UINT16
+static constexpr uint16_t PTP_PROP_EXPOSURE_BIAS = 0x5010;  // INT16, EV * 1000
 
 // Canon vendor property codes (used with PTP_OP_CANON_SET_PROP 0x9110)
 // Values are APEX-encoded single bytes; see CanonExposure.h for the full tables.
