@@ -66,12 +66,53 @@ static void logHexDump(const char* label, const uint8_t* buf, size_t len) {
 // PtpIpSession
 // ============================================================================
 
+// Identity used until the application calls setHostIdentity().
+static const uint8_t DEFAULT_HOST_GUID[PTPIP_GUID_SIZE] = {
+    0x4d, 0xc4, 0x79, 0xe1, 0xc1, 0x0e, 0x46, 0x27,
+    0x9e, 0xe1, 0x1b, 0x2a, 0xbc, 0xe2, 0xda, 0x29
+};
+static const char* DEFAULT_HOST_NAME = "ESP-32";
+
 PtpIpSession::PtpIpSession(PtpIpTransport& transport)
     : _transport(transport)
     , _transactionId(0)
     , _connected(false)
     , _sessionOpen(false)
-{}
+{
+    memcpy(_hostGuid, DEFAULT_HOST_GUID, PTPIP_GUID_SIZE);
+    strcpy(_hostName, DEFAULT_HOST_NAME);
+}
+
+bool PtpIpSession::setHostIdentity(const uint8_t guid[PTPIP_GUID_SIZE], const char* name) {
+    if (guid == nullptr || name == nullptr) {
+        LOG_ERROR("setHostIdentity: guid and name are required");
+        return false;
+    }
+
+    // The name is sent as UTF-16LE by zero-extending each byte, which is only
+    // correct for ASCII. Reject anything else rather than send garbage.
+    size_t len = 0;
+    for (; name[len] != '\0'; len++) {
+        if (len >= PTPIP_MAX_HOST_NAME_LEN) {
+            LOG_ERROR("setHostIdentity: name longer than %u characters",
+                      (unsigned)PTPIP_MAX_HOST_NAME_LEN);
+            return false;
+        }
+        if (name[len] < 0x20 || name[len] > 0x7E) {
+            LOG_ERROR("setHostIdentity: name must be printable ASCII");
+            return false;
+        }
+    }
+    if (len == 0) {
+        LOG_ERROR("setHostIdentity: name must not be empty");
+        return false;
+    }
+
+    memcpy(_hostGuid, guid, PTPIP_GUID_SIZE);
+    memcpy(_hostName, name, len + 1);
+    LOG_DEBUG("Host identity set, name: %s", _hostName);
+    return true;
+}
 
 bool PtpIpSession::connect(const char* host) {
     // Step 1: open command channel only
@@ -132,36 +173,27 @@ bool PtpIpSession::isConnected() {
 // Packet layout:
 //   [0..3]   length (uint32 LE) — total packet size
 //   [4..7]   type   (uint32 LE) = 0x00000001
-//   [8..23]  GUID   (16 bytes)
-//   [24..]   Client name in UTF-16LE, null-terminated (no length prefix)
+//   [8..23]  GUID   (16 bytes) — from setHostIdentity()
+//   [24..]   Host name in UTF-16LE, null-terminated (no length prefix)
 //   [..]     PTP version (uint32 LE) = 0x00010000
 // ----------------------------------------------------------------------------
 bool PtpIpSession::_sendInitCommandRequest() {
-    static const uint8_t guid[16] = {
-        0x4d, 0xc4, 0x79, 0xe1, 0xc1, 0x0e, 0x46, 0x27,
-        0x9e, 0xe1, 0x1b, 0x2a, 0xbc, 0xe2, 0xda, 0x29
-    };
-
-    // 0x0a, 0x39, 0xff, 0x54, 0x80, 0x3b, 0xb1, 0x45,
-    // 0x9a, 0xe6, 0x76, 0x6b, 0xf1, 0x60, 0x31, 0x44
-
-    const char* clientName = "ESP-32";
-    uint8_t numChars = (uint8_t)(strlen(clientName) + 1);  // +1 for null terminator
+    size_t numChars = strlen(_hostName) + 1;  // +1 for null terminator
 
     // Total: 8 (header) + 16 (GUID) + numChars*2 (UTF-16LE incl. null) + 4 (version)
-    uint32_t totalLen = 8 + 16 + ((uint32_t)numChars * 2) + 4;
+    uint32_t totalLen = 8 + PTPIP_GUID_SIZE + ((uint32_t)numChars * 2) + 4;
 
-    uint8_t buf[128];
+    uint8_t buf[8 + PTPIP_GUID_SIZE + (PTPIP_MAX_HOST_NAME_LEN + 1) * 2 + 4];
     size_t off = 0;
 
     writeU32LE(buf, off, totalLen);
     writeU32LE(buf, off, PTPIP_PKT_INIT_CMD_REQ);
-    memcpy(buf + off, guid, 16);
-    off += 16;
+    memcpy(buf + off, _hostGuid, PTPIP_GUID_SIZE);
+    off += PTPIP_GUID_SIZE;
 
-    // Client name as UTF-16LE, null-terminated
-    for (int i = 0; i < numChars - 1; i++) {
-        writeU16LE(buf, off, (uint16_t)clientName[i]);
+    // Host name as UTF-16LE, null-terminated (ASCII enforced by setHostIdentity)
+    for (size_t i = 0; i < numChars - 1; i++) {
+        writeU16LE(buf, off, (uint16_t)_hostName[i]);
     }
     writeU16LE(buf, off, 0x0000);  // null terminator
 
@@ -189,7 +221,8 @@ bool PtpIpSession::_recvInitCommandAck(uint32_t& connectionNumber) {
     if (type == 0x00000005) {
         uint32_t errorCode = (n >= 12) ? readU32LE(buf, 8) : 0;
         const char* reason = "unknown";
-        if      (errorCode == 0x00000001) reason = "Rejected — camera may need to be in EOS Utility waiting mode";
+        if      (errorCode == 0x00000001) reason = "Rejected — camera refused this host; it may need to be in its "
+                                                   "remote-control waiting mode (e.g. Canon EOS Utility mode)";
         else if (errorCode == 0x00000002) reason = "Busy — camera is already connected to another client";
         else if (errorCode == 0x00000003) reason = "Unspecified error";
         LOG_ERROR("Camera sent Init_Fail (errorCode=0x%08X): %s", (unsigned)errorCode, reason);

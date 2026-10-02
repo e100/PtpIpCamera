@@ -124,6 +124,33 @@ PtpIpSession                (session state, transaction IDs, OpenSession)
 
 ---
 
+## Host Identity
+
+During the PTP/IP handshake the library identifies itself to the camera with a 16-byte GUID and a host name. By default every device uses the same built-in GUID and the name `ESP-32`.
+
+Some cameras remember a paired host by this identity and reject any other (newer Nikon Z bodies, for example). Give each device its own identity by generating a GUID once, storing it, and passing the same values before every `begin()`:
+
+```cpp
+#include <Preferences.h>
+
+Preferences prefs;
+uint8_t guid[16];
+
+prefs.begin("ptpip", false);
+if (prefs.getBytes("guid", guid, sizeof(guid)) != sizeof(guid)) {
+    esp_fill_random(guid, sizeof(guid));   // first boot: create and persist
+    prefs.putBytes("guid", guid, sizeof(guid));
+}
+prefs.end();
+
+session.setHostIdentity(guid, "MyRemote");   // takes effect on the next connect
+camera.begin(CAMERA_IP);
+```
+
+The name must be 1–63 printable ASCII characters. `setHostIdentity()` returns `false` and leaves the current identity unchanged if its arguments are invalid.
+
+---
+
 ## Logging
 
 The library emits log messages but never prints to `Serial` on its own. You register a callback and decide what to do with each message:

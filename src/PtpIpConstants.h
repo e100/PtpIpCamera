@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <stddef.h>
 
 // ============================================================================
 // PTP/IP Protocol Constants
@@ -10,6 +11,10 @@
 // Network
 static constexpr uint16_t PTPIP_PORT        = 15740;
 static constexpr uint8_t  PTPIP_HEADER_SIZE = 8;  // length (4) + type (4)
+
+// Host identity sent in Init_Command_Request
+static constexpr size_t   PTPIP_GUID_SIZE          = 16;
+static constexpr size_t   PTPIP_MAX_HOST_NAME_LEN  = 63;  // characters, excluding null terminator
 
 // ----------------------------------------------------------------------------
 // PTP/IP Packet Types

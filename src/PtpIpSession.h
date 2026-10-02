@@ -15,6 +15,19 @@ class PtpIpSession {
 public:
     explicit PtpIpSession(PtpIpTransport& transport);
 
+    // Set the GUID and host name sent in Init_Command_Request.
+    // Some cameras (e.g. newer Nikon Z bodies) remember a paired host by this
+    // identity and reject any other, so applications should generate a GUID
+    // once, persist it (e.g. ESP32 NVS), and pass the same values on every boot.
+    // name must be 1..PTPIP_MAX_HOST_NAME_LEN printable ASCII characters.
+    // Takes effect on the next connect(). Returns false (identity unchanged)
+    // if guid is null or name is invalid.
+    // Default identity: a fixed library GUID and the name "ESP-32".
+    bool setHostIdentity(const uint8_t guid[PTPIP_GUID_SIZE], const char* name);
+
+    const uint8_t* hostGuid() const { return _hostGuid; }
+    const char*    hostName() const { return _hostName; }
+
     // Execute the 4-phase PTP/IP handshake on both channels.
     // Must be called before openSession().
     bool connect(const char* host);
@@ -72,6 +85,8 @@ private:
     uint32_t        _transactionId;
     bool            _connected;
     bool            _sessionOpen;
+    uint8_t         _hostGuid[PTPIP_GUID_SIZE];
+    char            _hostName[PTPIP_MAX_HOST_NAME_LEN + 1];
 
     // Handshake steps
     bool _sendInitCommandRequest();
