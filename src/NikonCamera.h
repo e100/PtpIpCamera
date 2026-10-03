@@ -43,6 +43,22 @@ enum class NikonPairingState {
     AWAITING_CAMERA     ///< confirmPairing() succeeded; waiting for the user to confirm on the camera.
 };
 
+// Values a property accepts right now, from GetDevicePropDesc. The camera
+// changes them with the exposure mode, lens and other settings, so read them
+// again when stepping rather than keeping them.
+struct NikonPropOptions {
+    static constexpr uint16_t MAX_VALUES = 128;
+    enum class Form : uint8_t { None, Range, List };
+
+    Form     form;
+    bool     writable;          // false: the camera reports the property as read-only
+    int32_t  current;           // sign-extended for signed types (e.g. exposure bias)
+    int32_t  min, max, step;    // Form::Range
+    uint16_t count;             // Form::List: entries in values[], in the camera's order
+    bool     truncated;         // the camera offered more than MAX_VALUES
+    int32_t  values[MAX_VALUES];
+};
+
 // Cached exposure state, kept current by poll(). Values are raw PTP units.
 struct NikonState {
     uint16_t fNumber;        // f-number * 100
@@ -123,6 +139,10 @@ public:
 
     CameraResult setExposureCompensation(float ev) override;
 
+    // Read the values the camera accepts for prop, and its current value
+    // (raw PTP units, as setCameraProperty()).
+    CameraResult getPropOptions(CameraProperty prop, NikonPropOptions& out);
+
     // -------------------------------------------------------------------------
     // Not yet implemented for Nikon — return CAM_E_NOT_SUPPORTED
     // -------------------------------------------------------------------------
@@ -195,4 +215,8 @@ protected:
     CameraResult _setProp(uint16_t propCode, uint32_t value, uint8_t size);
 
     CameraResult _mapResponse(uint16_t responseCode) const;
+
+    // DeviceInfo lists the property, or lists none at all (the ZR's restricted
+    // pre-authentication DeviceInfo, which can't be trusted to be complete).
+    bool _hasProp(uint16_t code) const;
 };

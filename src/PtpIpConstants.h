@@ -57,6 +57,7 @@ static constexpr uint8_t  PTP_MAX_PARAMS                = 5;
 static constexpr uint16_t PTP_OP_GET_DEVICE_INFO  = 0x1001;
 static constexpr uint16_t PTP_OP_OPEN_SESSION     = 0x1002;
 static constexpr uint16_t PTP_OP_CLOSE_SESSION    = 0x1003;
+static constexpr uint16_t PTP_OP_GET_PROP_DESC    = 0x1014;
 static constexpr uint16_t PTP_OP_GET_DEVICE_PROP  = 0x1015;
 static constexpr uint16_t PTP_OP_SET_DEVICE_PROP  = 0x1016;
 static constexpr uint16_t PTP_OP_INITIATE_CAPTURE = 0x100E;

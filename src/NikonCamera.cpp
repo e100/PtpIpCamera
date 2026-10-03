@@ -383,7 +383,7 @@ void NikonCamera::poll() {
 
 CameraResult NikonCamera::_refreshState(bool fireCallbacks) {
     for (const NikonPropSpec& p : NIKON_PROPS) {
-        if (!_info.supportsProperty(p.code)) continue;
+        if (!_hasProp(p.code)) continue;
 
         uint32_t value = 0;
         CameraResult r = _getProp(p.code, value);
@@ -459,7 +459,7 @@ CameraResult NikonCamera::setCameraProperty(CameraProperty prop, uint32_t value)
     if (!_ready) return CAM_E_NOT_CONNECTED;
     uint16_t code = propCodeFor(prop);
     const NikonPropSpec* spec = findSpec(code);
-    if (spec == nullptr || !_info.supportsProperty(code)) return CAM_E_NOT_SUPPORTED;
+    if (spec == nullptr || !_hasProp(code)) return CAM_E_NOT_SUPPORTED;
 
     CameraResult r = _setProp(code, value, spec->size);
     if (r == CAM_OK) {
@@ -473,13 +473,97 @@ CameraResult NikonCamera::getCameraProperty(CameraProperty prop, uint32_t& value
     if (!_ready) return CAM_E_NOT_CONNECTED;
     uint16_t code = propCodeFor(prop);
     const NikonPropSpec* spec = findSpec(code);
-    if (spec == nullptr || !_info.supportsProperty(code)) return CAM_E_NOT_SUPPORTED;
+    if (spec == nullptr || !_hasProp(code)) return CAM_E_NOT_SUPPORTED;
 
     if (_state.known & spec->knownBit) {
         value = stateField(_state, code);
         return CAM_OK;
     }
     return _getProp(code, value);
+}
+
+// PTP integer data types: 1 = INT8, 2 = UINT8, ... 8 = UINT64. Returns the size
+// in bytes, or 0 for anything else (arrays, strings, 128-bit).
+static uint8_t ptpTypeSize(uint16_t type) {
+    switch (type) {
+        case 0x0001: case 0x0002: return 1;
+        case 0x0003: case 0x0004: return 2;
+        case 0x0005: case 0x0006: return 4;
+        default:                  return 0;
+    }
+}
+
+// Little-endian integer of `size` bytes at p, sign-extended if the type is signed.
+static int32_t ptpReadInt(const uint8_t* p, uint8_t size, bool isSigned) {
+    uint32_t v = 0;
+    for (uint8_t i = 0; i < size; i++) v |= (uint32_t)p[i] << (8 * i);
+    if (isSigned && size < 4 && (v & (1u << (8 * size - 1)))) v |= ~0u << (8 * size);
+    return (int32_t)v;
+}
+
+CameraResult NikonCamera::getPropOptions(CameraProperty prop, NikonPropOptions& out) {
+    out.form = NikonPropOptions::Form::None;
+    out.writable = false;
+    out.count = 0;
+    out.truncated = false;
+    if (!_ready) return CAM_E_NOT_CONNECTED;
+    uint16_t code = propCodeFor(prop);
+    if (code == 0 || !_hasProp(code)) return CAM_E_NOT_SUPPORTED;
+
+    size_t   len = 0;
+    uint16_t responseCode;
+    uint32_t param = code;
+    if (!_session.dataIn(PTP_OP_GET_PROP_DESC, &param, 1, _dataBuf, sizeof(_dataBuf), len, responseCode)) {
+        return CAM_E_PROTOCOL;
+    }
+    if (responseCode != PTP_RSP_OK) {
+        LOG_WARNING("GetDevicePropDesc 0x%04X: response 0x%04X", code, responseCode);
+        return _mapResponse(responseCode);
+    }
+
+    // PropertyCode u16, DataType u16, GetSet u8, FactoryDefault, Current, FormFlag u8, form
+    const uint8_t* d = _dataBuf;
+    if (len < 5) return CAM_E_PROTOCOL;
+    uint16_t type = (uint16_t)(d[2] | (d[3] << 8));
+    uint8_t  size = ptpTypeSize(type);
+    bool     isSigned = (type & 1) != 0;
+    if (size == 0) {
+        LOG_WARNING("GetDevicePropDesc 0x%04X: unsupported data type 0x%04X", code, type);
+        return CAM_E_PROTOCOL;
+    }
+    out.writable = d[4] != 0;
+    size_t pos = 5 + size;                       // skip the factory default
+    if (len < pos + size + 1) return CAM_E_PROTOCOL;
+    out.current = ptpReadInt(d + pos, size, isSigned);
+    pos += size;
+    uint8_t form = d[pos++];
+
+    if (form == 0x01) {                          // Range: min, max, step
+        if (len < pos + 3 * size) return CAM_E_PROTOCOL;
+        out.min  = ptpReadInt(d + pos, size, isSigned);
+        out.max  = ptpReadInt(d + pos + size, size, isSigned);
+        out.step = ptpReadInt(d + pos + 2 * size, size, isSigned);
+        out.form = NikonPropOptions::Form::Range;
+    } else if (form == 0x02) {                   // Enumeration: u16 count, values
+        if (len < pos + 2) return CAM_E_PROTOCOL;
+        uint16_t n = (uint16_t)(d[pos] | (d[pos + 1] << 8));
+        pos += 2;
+        if (len < pos + (size_t)n * size) return CAM_E_PROTOCOL;
+        if (n > NikonPropOptions::MAX_VALUES) {
+            LOG_WARNING("GetDevicePropDesc 0x%04X: %u values, keeping %u",
+                        code, n, (unsigned)NikonPropOptions::MAX_VALUES);
+            out.truncated = true;
+            n = NikonPropOptions::MAX_VALUES;
+        }
+        for (uint16_t i = 0; i < n; i++) out.values[i] = ptpReadInt(d + pos + (size_t)i * size, size, isSigned);
+        out.count = n;
+        out.form = NikonPropOptions::Form::List;
+    }
+    return CAM_OK;
+}
+
+bool NikonCamera::_hasProp(uint16_t code) const {
+    return _info.numProperties == 0 || _info.supportsProperty(code);
 }
 
 // ============================================================================

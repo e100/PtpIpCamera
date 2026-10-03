@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `finishPairing()` / `cancelPairing()`), with `pollCameraConfirmation()` /
   `waitForCameraConfirmation()` to detect the user confirming on the camera.
   Capture and AEB not yet implemented.
+- `NikonCamera::getPropOptions()`: reads a property's allowed values (list or
+  range), current value and whether it is writable, via GetDevicePropDesc (0x1014).
 - `CAM_E_NOT_PAIRED` result code.
 - `PtpDeviceInfo` / `ptpParseDeviceInfo()`: header-only parser for the DeviceInfo dataset.
 - `PtpIpSession::dataIn()` / `dataOut()`: transactions using the PTP/IP specification's
@@ -26,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Init_Fail "rejected" log message no longer assumes a Canon camera.
+- `NikonCamera` reads and writes the exposure properties even when DeviceInfo
+  lists no properties (the ZR's restricted DeviceInfo), instead of skipping them.
 
 ## [1.0.0] - 2026-03-15
 
