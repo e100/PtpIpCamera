@@ -125,6 +125,7 @@ public:
     // True while the camera's photo/movie switch is on movie (read by begin()
     // and poll()). Exposure then uses the movie properties: APERTURE,
     // SHUTTER_SPEED, ISO and EXPOSURE_COMPENSATION address the movie settings,
+    // WHITE_BALANCE uses the movie white balance too,
     // and SHUTTER_SPEED's raw value is numerator << 16 | denominator seconds
     // (0x0001007D = 1/125 s) instead of seconds * 10000. The typed setters and
     // getSettings() convert either way. False on bodies without the switch.
@@ -160,6 +161,10 @@ public:
     // The raw DevicePropDesc dataset for propCode. data points into an internal
     // buffer and stays valid until the next camera call.
     CameraResult readPropDesc(uint16_t propCode, const uint8_t*& data, size_t& len);
+
+    // Write any integer property by its PTP code, sized from its DevicePropDesc.
+    // For experiments: bypasses the cached state, which poll() then refreshes.
+    CameraResult setPropertyRaw(uint16_t propCode, uint32_t value);
 
     // -------------------------------------------------------------------------
     // Not yet implemented for Nikon — return CAM_E_NOT_SUPPORTED

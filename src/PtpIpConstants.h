@@ -123,6 +123,7 @@ static constexpr uint16_t NIKON_PROP_MOVIE_SHUTTER = 0xd1a8;  // UINT32: numerat
 static constexpr uint16_t NIKON_PROP_MOVIE_FNUMBER = 0xd1a9;  // UINT16, f-number * 100
 static constexpr uint16_t NIKON_PROP_MOVIE_ISO     = 0xd1aa;  // UINT32
 static constexpr uint16_t NIKON_PROP_MOVIE_BIAS    = 0xd1ab;  // INT16, EV * 1000
+static constexpr uint16_t NIKON_PROP_MOVIE_WB      = 0xd23a;  // UINT16, PTP white balance enum
 
 // Canon vendor property codes (used with PTP_OP_CANON_SET_PROP 0x9110)
 // Values are APEX-encoded single bytes; see CanonExposure.h for the full tables.

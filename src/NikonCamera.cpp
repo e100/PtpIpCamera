@@ -33,7 +33,7 @@ static const NikonPropSpec NIKON_PROPS[] = {
     { PTP_PROP_SHUTTER_SPEED,    4, NIKON_PROP_MOVIE_SHUTTER, 4, NIKON_KNOWN_EXPOSURE, true,  CameraProperty::SHUTTER_SPEED },
     { PTP_PROP_ISO,              2, NIKON_PROP_MOVIE_ISO,     4, NIKON_KNOWN_ISO,      true,  CameraProperty::ISO },
     { PTP_PROP_EXPOSURE_BIAS,    2, NIKON_PROP_MOVIE_BIAS,    2, NIKON_KNOWN_BIAS,     true,  CameraProperty::EXPOSURE_COMPENSATION },
-    { PTP_PROP_WHITE_BALANCE,    2, 0,                        0, NIKON_KNOWN_WB,       true,  CameraProperty::WHITE_BALANCE },
+    { PTP_PROP_WHITE_BALANCE,    2, NIKON_PROP_MOVIE_WB,      2, NIKON_KNOWN_WB,       true,  CameraProperty::WHITE_BALANCE },
     { PTP_PROP_EXPOSURE_PROGRAM, 2, 0,                        0, NIKON_KNOWN_PROGRAM,  false, CameraProperty::APERTURE },
 };
 
@@ -622,6 +622,16 @@ CameraResult NikonCamera::getPropOptions(uint16_t code, NikonPropOptions& out) {
         out.form = NikonPropOptions::Form::List;
     }
     return CAM_OK;
+}
+
+CameraResult NikonCamera::setPropertyRaw(uint16_t propCode, uint32_t value) {
+    const uint8_t* d;
+    size_t len;
+    CameraResult r = readPropDesc(propCode, d, len);
+    if (r != CAM_OK) return r;
+    uint8_t size = ptpTypeSize((uint16_t)(d[2] | (d[3] << 8)));
+    if (size == 0) return CAM_E_NOT_SUPPORTED;
+    return _setProp(propCode, value, size);
 }
 
 bool NikonCamera::_hasProp(uint16_t code) const {
