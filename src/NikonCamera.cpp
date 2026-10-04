@@ -92,6 +92,7 @@ NikonCamera::NikonCamera(PtpIpSession& session)
     , _cameraConfirmed(false)
     , _movie(false)
     , _hasModeProp(true)
+    , _angle(false)
     , _onPropChanged(nullptr),       _onPropChangedCtx(nullptr)
     , _onCaptureComplete(nullptr),   _onCaptureCompleteCtx(nullptr)
     , _onConnectionChanged(nullptr), _onConnectionChangedCtx(nullptr)
@@ -130,6 +131,7 @@ CameraResult NikonCamera::begin(const char* host) {
     _state = {};
     _pairState = NikonPairingState::IDLE;
     _movie = false;
+    _angle = false;
     _hasModeProp = true;    // re-detect: an unpaired camera refuses every property
 
     CameraResult r = _open(host);
@@ -434,19 +436,54 @@ CameraResult NikonCamera::_refreshState(bool fireCallbacks) {
     return CAM_OK;
 }
 
+CameraResult NikonCamera::getMovieShutterMode(uint8_t& mode) {
+    if (!_ready) return CAM_E_NOT_CONNECTED;
+    if (!_hasExProps()) return CAM_E_NOT_SUPPORTED;
+    uint32_t v;
+    CameraResult r = _getProp(NIKON_PROP_MOVIE_SHUTTER_MODE_EX, v);
+    if (r == CAM_OK) mode = (uint8_t)v;
+    return r;
+}
+
+CameraResult NikonCamera::setMovieShutterMode(uint8_t mode) {
+    if (!_ready) return CAM_E_NOT_CONNECTED;
+    if (!_hasExProps()) return CAM_E_NOT_SUPPORTED;
+    if (mode != NIKON_SHUTTER_MODE_SPEED && mode != NIKON_SHUTTER_MODE_ANGLE) return CAM_E_INVALID_ARG;
+    return _setProp(NIKON_PROP_MOVIE_SHUTTER_MODE_EX, mode, 1);
+}
+
+CameraResult NikonCamera::getMovieBaseIso(uint8_t& base) {
+    if (!_ready) return CAM_E_NOT_CONNECTED;
+    if (!_hasExProps()) return CAM_E_NOT_SUPPORTED;
+    uint32_t v;
+    CameraResult r = _getProp(NIKON_PROP_MOVIE_BASE_ISO_EX, v);
+    if (r == CAM_OK) base = (uint8_t)v;
+    return r;
+}
+
+CameraResult NikonCamera::setMovieBaseIso(uint8_t base) {
+    if (!_ready) return CAM_E_NOT_CONNECTED;
+    if (!_hasExProps()) return CAM_E_NOT_SUPPORTED;
+    if (base != NIKON_BASE_ISO_LOW && base != NIKON_BASE_ISO_HIGH) return CAM_E_INVALID_ARG;
+    return _setProp(NIKON_PROP_MOVIE_BASE_ISO_EX, base, 1);
+}
+
 bool NikonCamera::_hasExProps() const {
     return _info.supportsOperation(PTP_OP_NIKON_GET_PROP_EX) && _info.supportsOperation(PTP_OP_NIKON_SET_PROP_EX) &&
            _info.supportsOperation(PTP_OP_NIKON_GET_PROP_DESC_EX);
 }
 
 // Movie ISO: the ZR's 0xD1AA is read-only; NX Tether writes 32-bit 0x1D09E.
+// Movie shutter in angle mode: the angle (the speed is read-only then).
 uint32_t NikonCamera::_movieCode(const NikonPropSpec& spec) const {
     if (spec.code == PTP_PROP_ISO && _hasExProps()) return NIKON_PROP_MOVIE_ISO_EX;
+    if (spec.code == PTP_PROP_SHUTTER_SPEED && _angle && _hasExProps()) return NIKON_PROP_MOVIE_SHUTTER_ANGLE_EX;
     return spec.movieCode;
 }
 
 uint8_t NikonCamera::_movieSize(const NikonPropSpec& spec) const {
     if (spec.code == PTP_PROP_ISO && _hasExProps()) return 4;
+    if (spec.code == PTP_PROP_SHUTTER_SPEED && _angle && _hasExProps()) return 4;
     return spec.movieSize;
 }
 
@@ -461,9 +498,16 @@ bool NikonCamera::_readMode() {
     }
     if (r != CAM_OK) return false;
     bool movie = v == 1;
-    if (movie == _movie) return false;
+
+    bool angle = false;
+    if (movie && _hasExProps() && _getProp(NIKON_PROP_MOVIE_SHUTTER_MODE_EX, v) == CAM_OK) {
+        angle = v == NIKON_SHUTTER_MODE_ANGLE;
+    }
+    if (movie == _movie && angle == _angle) return false;
+    if (movie != _movie) LOG_INFO("Camera switched to %s mode", movie ? "movie" : "photo");
+    if (angle != _angle) LOG_INFO("Movie shutter switched to %s", angle ? "angle" : "speed");
     _movie = movie;
-    LOG_INFO("Camera switched to %s mode", movie ? "movie" : "photo");
+    _angle = angle;
     return true;
 }
 
@@ -500,6 +544,7 @@ CameraResult NikonCamera::setAperture(float fstop) {
 
 CameraResult NikonCamera::setShutterSpeed(float seconds) {
     if (!(seconds > 0.0f)) return CAM_E_INVALID_ARG;
+    if (movieShutterAngle()) return CAM_E_NOT_READY;   // speed is read-only in angle mode
     if (_movie) {
         // numerator << 16 | denominator: 1/n for fast speeds, whole seconds otherwise
         uint32_t raw = seconds >= 1.0f ? ((uint32_t)lroundf(seconds) << 16) | 1u
@@ -746,7 +791,7 @@ CameraResult NikonCamera::getSettings(CameraSettings& out) {
 
     // FNumber 0 = no lens, or a lens without electronic contacts: leave as unknown
     if ((_state.known & NIKON_KNOWN_FNUMBER) && _state.fNumber != 0) out.aperture = _state.fNumber / 100.0f;
-    if (_state.known & NIKON_KNOWN_EXPOSURE) {
+    if ((_state.known & NIKON_KNOWN_EXPOSURE) && !movieShutterAngle()) {
         if (!_movie) {
             out.shutterSpeed = _state.exposureTime / 10000.0f;
         } else {

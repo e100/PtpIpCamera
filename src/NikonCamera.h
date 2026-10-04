@@ -133,6 +133,25 @@ public:
     // getSettings() convert either way. False on bodies without the switch.
     bool movieMode() const { return _movie; }
 
+    // Movie shutter mode (ZR, property 0x1D074): shutter speed or shutter
+    // angle. CAM_E_NOT_SUPPORTED on bodies without it. While the camera is in
+    // angle mode (movieShutterAngle(), read by poll()), SHUTTER_SPEED addresses
+    // the shutter angle (0x1D075) and its raw value is degrees * 100
+    // (18000 = 180 degrees); the movie shutter speed is read-only then.
+    static constexpr uint8_t NIKON_SHUTTER_MODE_SPEED = 1;
+    static constexpr uint8_t NIKON_SHUTTER_MODE_ANGLE = 2;
+    CameraResult getMovieShutterMode(uint8_t& mode);
+    CameraResult setMovieShutterMode(uint8_t mode);
+    bool movieShutterAngle() const { return _movie && _angle; }
+
+    // Dual base ISO for movies (ZR, property 0x1D09D): NIKON_BASE_ISO_LOW or
+    // NIKON_BASE_ISO_HIGH. CAM_E_NOT_SUPPORTED on bodies without it. Changing
+    // the base changes the ISO values getPropOptions() offers.
+    static constexpr uint8_t NIKON_BASE_ISO_LOW  = 1;
+    static constexpr uint8_t NIKON_BASE_ISO_HIGH = 2;
+    CameraResult getMovieBaseIso(uint8_t& base);
+    CameraResult setMovieBaseIso(uint8_t base);
+
     // DeviceInfo read during begin(); empty strings / zero counts before that.
     const PtpDeviceInfo& deviceInfo() const { return _info; }
 
@@ -227,6 +246,7 @@ protected:
     bool              _cameraConfirmed;   // 0x4008 seen while AWAITING_CAMERA
     bool              _movie;             // camera's photo/movie switch is on movie
     bool              _hasModeProp;       // camera answers NIKON_PROP_PHOTO_MOVIE
+    bool              _angle;             // movie shutter is in angle mode
     uint8_t           _dataBuf[8192];   // DeviceInfo and other data-in payloads
 
     PropChangedCb           _onPropChanged;       void* _onPropChangedCtx;

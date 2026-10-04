@@ -132,6 +132,9 @@ static constexpr uint16_t NIKON_PROP_MOVIE_BIAS    = 0xd1ab;  // INT16, EV * 100
 static constexpr uint16_t NIKON_PROP_MOVIE_WB      = 0xd23a;  // UINT16, PTP white balance enum
 // 32-bit vendor properties (Ex operations). Seen on a ZR in NX Tether traffic.
 static constexpr uint32_t NIKON_PROP_MOVIE_ISO_EX  = 0x1d09e;  // UINT32 movie ISO; writable where 0xD1AA is not
+static constexpr uint32_t NIKON_PROP_MOVIE_SHUTTER_MODE_EX  = 0x1d074;  // UINT8 movie shutter: 1 = speed, 2 = angle (ZR)
+static constexpr uint32_t NIKON_PROP_MOVIE_SHUTTER_ANGLE_EX = 0x1d075;  // INT32 shutter angle, degrees * 100 (ZR)
+static constexpr uint32_t NIKON_PROP_MOVIE_BASE_ISO_EX      = 0x1d09d;  // UINT8 dual base ISO: 1 = Low, 2 = High (ZR)
 
 // Canon vendor property codes (used with PTP_OP_CANON_SET_PROP 0x9110)
 // Values are APEX-encoded single bytes; see CanonExposure.h for the full tables.

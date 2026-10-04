@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SetDevicePropValueEx 0x943C), identified from NX Tether traffic. Movie ISO
   uses 0x1D09E where those operations exist (the ZR's 0xD1AA is read-only).
   `begin()` sends ChangeApplicationMode(1) (0x9435) when supported, as NX Tether does.
+- `NikonCamera::getMovieShutterMode()` / `setMovieShutterMode()`: the ZR's movie
+  shutter mode, speed or angle (0x1D074). In angle mode (`movieShutterAngle()`),
+  SHUTTER_SPEED addresses the shutter angle (0x1D075, degrees * 100).
+- `NikonCamera::getMovieBaseIso()` / `setMovieBaseIso()`: the ZR's dual base ISO
+  for movies (0x1D09D, 1 = Low, 2 = High).
 - `NikonCamera::getVendorPropCodes()`: the vendor property list from Nikon
   GetVendorCodes (0x9439), including 32-bit codes on newer Z bodies.
   `readPropDesc()`, `getPropOptions()` and `setPropertyRaw()` take 32-bit codes.
