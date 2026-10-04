@@ -143,6 +143,14 @@ public:
     // (raw PTP units, as setCameraProperty()).
     CameraResult getPropOptions(CameraProperty prop, NikonPropOptions& out);
 
+    // The same for any property by its PTP code (e.g. a Nikon vendor property).
+    // Integer properties only; others return CAM_E_NOT_SUPPORTED.
+    CameraResult getPropOptions(uint16_t propCode, NikonPropOptions& out);
+
+    // The raw DevicePropDesc dataset for propCode. data points into an internal
+    // buffer and stays valid until the next camera call.
+    CameraResult readPropDesc(uint16_t propCode, const uint8_t*& data, size_t& len);
+
     // -------------------------------------------------------------------------
     // Not yet implemented for Nikon — return CAM_E_NOT_SUPPORTED
     // -------------------------------------------------------------------------

@@ -501,36 +501,52 @@ static int32_t ptpReadInt(const uint8_t* p, uint8_t size, bool isSigned) {
     return (int32_t)v;
 }
 
-CameraResult NikonCamera::getPropOptions(CameraProperty prop, NikonPropOptions& out) {
-    out.form = NikonPropOptions::Form::None;
-    out.writable = false;
-    out.count = 0;
-    out.truncated = false;
+CameraResult NikonCamera::readPropDesc(uint16_t propCode, const uint8_t*& data, size_t& len) {
+    data = _dataBuf;
+    len = 0;
     if (!_ready) return CAM_E_NOT_CONNECTED;
-    uint16_t code = propCodeFor(prop);
-    if (code == 0 || !_hasProp(code)) return CAM_E_NOT_SUPPORTED;
-
-    size_t   len = 0;
     uint16_t responseCode;
-    uint32_t param = code;
+    uint32_t param = propCode;
     if (!_session.dataIn(PTP_OP_GET_PROP_DESC, &param, 1, _dataBuf, sizeof(_dataBuf), len, responseCode)) {
         return CAM_E_PROTOCOL;
     }
     if (responseCode != PTP_RSP_OK) {
-        LOG_WARNING("GetDevicePropDesc 0x%04X: response 0x%04X", code, responseCode);
+        LOG_DEBUG("GetDevicePropDesc 0x%04X: response 0x%04X", propCode, responseCode);
         return _mapResponse(responseCode);
+    }
+    if (len < 5) return CAM_E_PROTOCOL;
+    return CAM_OK;
+}
+
+CameraResult NikonCamera::getPropOptions(CameraProperty prop, NikonPropOptions& out) {
+    uint16_t code = propCodeFor(prop);
+    if (code == 0 || !_hasProp(code)) {
+        out.form = NikonPropOptions::Form::None;
+        out.count = 0;
+        return CAM_E_NOT_SUPPORTED;
+    }
+    return getPropOptions(code, out);
+}
+
+CameraResult NikonCamera::getPropOptions(uint16_t code, NikonPropOptions& out) {
+    out.form = NikonPropOptions::Form::None;
+    out.writable = false;
+    out.count = 0;
+    out.truncated = false;
+
+    const uint8_t* d;
+    size_t len;
+    CameraResult r = readPropDesc(code, d, len);
+    if (r != CAM_OK) {
+        if (r != CAM_E_NOT_CONNECTED) LOG_WARNING("GetDevicePropDesc 0x%04X: %s", code, cameraResultStr(r));
+        return r;
     }
 
     // PropertyCode u16, DataType u16, GetSet u8, FactoryDefault, Current, FormFlag u8, form
-    const uint8_t* d = _dataBuf;
-    if (len < 5) return CAM_E_PROTOCOL;
     uint16_t type = (uint16_t)(d[2] | (d[3] << 8));
     uint8_t  size = ptpTypeSize(type);
     bool     isSigned = (type & 1) != 0;
-    if (size == 0) {
-        LOG_WARNING("GetDevicePropDesc 0x%04X: unsupported data type 0x%04X", code, type);
-        return CAM_E_PROTOCOL;
-    }
+    if (size == 0) return CAM_E_NOT_SUPPORTED;
     out.writable = d[4] != 0;
     size_t pos = 5 + size;                       // skip the factory default
     if (len < pos + size + 1) return CAM_E_PROTOCOL;
