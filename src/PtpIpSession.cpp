@@ -344,19 +344,9 @@ bool PtpIpSession::openSession() {
 // ----------------------------------------------------------------------------
 // Public sendCommand overloads — delegate to _sendCmd
 // ----------------------------------------------------------------------------
-bool PtpIpSession::sendCommand(uint16_t opCode, uint16_t& responseCode) {
-    return _sendCmd(opCode, responseCode, nullptr, 0);
-}
-
-bool PtpIpSession::sendCommand(uint16_t opCode, uint16_t& responseCode, uint32_t p1) {
-    uint32_t params[1] = { p1 };
-    return _sendCmd(opCode, responseCode, params, 1);
-}
-
-bool PtpIpSession::sendCommand(uint16_t opCode, uint16_t& responseCode,
-                                uint32_t p1, uint32_t p2) {
-    uint32_t params[2] = { p1, p2 };
-    return _sendCmd(opCode, responseCode, params, 2);
+bool PtpIpSession::command(uint16_t opCode, const uint32_t* params, uint8_t numParams,
+                           uint16_t& responseCode) {
+    return _sendCmd(opCode, responseCode, params, numParams);
 }
 
 // ----------------------------------------------------------------------------
@@ -1108,6 +1098,21 @@ bool PtpIpSession::pollEventChannel(uint32_t& type, uint8_t* payload, size_t max
         LOG_DEBUG("pollEventChannel: answered Probe_Request");
     }
     return true;
+}
+
+bool PtpIpSession::nextEvent(PtpEvent& event) {
+    uint32_t type;
+    uint8_t  payload[6 + 4 * 3];
+    size_t   len;
+    while (pollEventChannel(type, payload, sizeof(payload), len)) {
+        if (type != PTPIP_TYPE_EVENT || len < 2) continue;   // probes are answered by pollEventChannel
+        // Event: code u16, transaction ID u32, then up to three u32 parameters
+        event.code = (uint16_t)(payload[0] | (payload[1] << 8));
+        event.numParams = len >= 6 ? (uint8_t)((len - 6) / 4) : 0;
+        for (uint8_t i = 0; i < event.numParams; i++) event.params[i] = readU32LE(payload, 6 + 4 * i);
+        return true;
+    }
+    return false;
 }
 
 // ----------------------------------------------------------------------------

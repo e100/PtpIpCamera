@@ -1,4 +1,5 @@
 #pragma once
+#include "PtpSession.h"
 #include "PtpIpTransport.h"
 #include "PtpIpConstants.h"
 #include <stdint.h>
@@ -11,7 +12,7 @@
 // Knows about PTP/IP packet structure; does NOT know about Canon opcodes.
 // ============================================================================
 
-class PtpIpSession {
+class PtpIpSession : public PtpSession {
 public:
     explicit PtpIpSession(PtpIpTransport& transport);
 
@@ -30,23 +31,22 @@ public:
 
     // Execute the 4-phase PTP/IP handshake on both channels.
     // Must be called before openSession().
-    bool connect(const char* host);
+    bool connect(const char* host) override;
 
-    void disconnect();
-    bool isConnected();
+    void disconnect() override;
+    bool isConnected() override;
 
     // Reason code from the camera's Init_Fail packet if the last connect() was
     // refused during the handshake (PTPIP_INIT_FAIL_*), otherwise 0.
-    uint32_t lastInitFailReason() const { return _initFailReason; }
+    uint32_t lastInitFailReason() const override { return _initFailReason; }
 
     // Send OpenSession (0x1002) with TransactionID=0, SessionID=1.
     // TransactionID counter is reset so the next sendCommand uses ID=1.
-    bool openSession();
+    bool openSession() override;
 
-    // Send a PTP command with 0, 1, or 2 parameters (no data phase).
-    bool sendCommand(uint16_t opCode, uint16_t& responseCode);
-    bool sendCommand(uint16_t opCode, uint16_t& responseCode, uint32_t p1);
-    bool sendCommand(uint16_t opCode, uint16_t& responseCode, uint32_t p1, uint32_t p2);
+    // Send a PTP command with no data phase (sendCommand() overloads in PtpSession).
+    bool command(uint16_t opCode, const uint32_t* params, uint8_t numParams,
+                 uint16_t& responseCode) override;
 
     // Send a PTP command that includes a data phase (e.g. SetDevicePropValue).
     // param1 is sent as Parameter 1 of the Command Request (e.g. PropCode).
@@ -80,7 +80,7 @@ public:
     bool getCanonEventData(uint8_t* buf, size_t maxLen, size_t& dataLen);
 
     // Send CloseSession (0x1003). The sockets stay open; call disconnect() after.
-    bool closeSession();
+    bool closeSession() override;
 
     // -------------------------------------------------------------------------
     // Spec-compliant transactions (PTP/IP packet types per CIPA DC-005).
@@ -95,12 +95,15 @@ public:
     // response and no data phase, dataLen is 0.
     bool dataIn(uint16_t opCode, const uint32_t* params, uint8_t numParams,
                 uint8_t* data, size_t maxDataLen, size_t& dataLen,
-                uint16_t& responseCode);
+                uint16_t& responseCode) override;
 
     // Data-out transaction: Start_Data then End_Data carrying data, then the response.
     bool dataOut(uint16_t opCode, const uint32_t* params, uint8_t numParams,
                  const uint8_t* data, size_t dataLen,
-                 uint16_t& responseCode);
+                 uint16_t& responseCode) override;
+
+    // Next Event packet from the event channel (answers keep-alive probes on the way).
+    bool nextEvent(PtpEvent& event) override;
 
     // Non-blocking read of one packet from the event channel.
     // Returns true and fills type/payload if a complete packet was read.

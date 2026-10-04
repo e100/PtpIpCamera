@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `PtpSession`: transport-independent PTP transaction interface (connect, sessions,
+  command / dataIn / dataOut, `nextEvent()`). `PtpIpSession` implements it.
+- `PtpUsbSession` (ESP32-S2/S3): PTP over USB as a USB host, using the ESP-IDF USB
+  Host Library. Tested on a Nikon ZR (USB ID 04B0:0458).
 - `PtpIpSession::setHostIdentity()` sets the GUID and host name sent in
   Init_Command_Request, with `hostGuid()` / `hostName()` accessors. Needed for
   cameras that remember a paired host by identity. The default identity is unchanged.
@@ -57,6 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keep-alives); `PtpIpTransport::availableEvent()`.
 
 ### Changed
+- `NikonCamera` takes a `PtpSession&` instead of a `PtpIpSession&`, so it works over
+  USB too. `PtpIpSession::sendCommand()` overloads moved to `PtpSession` (unchanged
+  for callers).
 - Init_Fail "rejected" log message no longer assumes a Canon camera.
 - `NikonCamera` reads and writes the exposure properties even when DeviceInfo
   lists no properties (the ZR's restricted DeviceInfo), instead of skipping them.

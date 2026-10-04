@@ -81,7 +81,7 @@ static uint16_t propCodeFor(CameraProperty prop) {
 // Constructor
 // ============================================================================
 
-NikonCamera::NikonCamera(PtpIpSession& session)
+NikonCamera::NikonCamera(PtpSession& session)
     : _session(session)
     , _ready(false)
     , _pollFailCount(0)
@@ -317,14 +317,10 @@ CameraResult NikonCamera::pollCameraConfirmation() {
     if (_pairState != NikonPairingState::AWAITING_CAMERA) return CAM_E_NOT_READY;
     if (_cameraConfirmed) return CAM_OK;
 
-    uint32_t type;
-    uint8_t  payload[32];
-    size_t   len;
-    while (_session.pollEventChannel(type, payload, sizeof(payload), len)) {
-        if (type != PTPIP_TYPE_EVENT || len < 2) continue;
-        uint16_t code = (uint16_t)payload[0] | ((uint16_t)payload[1] << 8);
-        LOG_DEBUG("pairing: event 0x%04X", code);
-        if (code == PTP_EVT_DEVICE_INFO_CHANGED) {
+    PtpEvent ev;
+    while (_session.nextEvent(ev)) {
+        LOG_DEBUG("pairing: event 0x%04X", ev.code);
+        if (ev.code == PTP_EVT_DEVICE_INFO_CHANGED) {
             _cameraConfirmed = true;
             LOG_INFO("User confirmed pairing on the camera");
             return CAM_OK;
@@ -534,23 +530,12 @@ bool NikonCamera::_readMode() {
 }
 
 void NikonCamera::_serviceEvents(uint8_t logLevel) {
-    uint32_t type;
-    uint8_t  payload[32];
-    size_t   len;
-    while (_session.pollEventChannel(type, payload, sizeof(payload), len)) {
-        if (type == PTPIP_TYPE_EVENT && len >= 2) {
-            // Event: code u16, transaction ID u32, then up to three u32 parameters
-            uint16_t code = (uint16_t)payload[0] | ((uint16_t)payload[1] << 8);
-            if (len >= 10) {
-                uint32_t p1 = (uint32_t)payload[6] | ((uint32_t)payload[7] << 8) |
-                              ((uint32_t)payload[8] << 16) | ((uint32_t)payload[9] << 24);
-                _ptpLog(logLevel, LOG_TAG, "event 0x%04X param 0x%04X", code, (unsigned)p1);
-            } else {
-                _ptpLog(logLevel, LOG_TAG, "event 0x%04X (%u bytes)", code, (unsigned)len);
-            }
+    PtpEvent ev;
+    while (_session.nextEvent(ev)) {
+        if (ev.numParams > 0) {
+            _ptpLog(logLevel, LOG_TAG, "event 0x%04X param 0x%04lX", ev.code, (unsigned long)ev.params[0]);
         } else {
-            _ptpLog(logLevel, LOG_TAG, "event channel packet type 0x%02X (%u bytes)",
-                    (unsigned)type, (unsigned)len);
+            _ptpLog(logLevel, LOG_TAG, "event 0x%04X", ev.code);
         }
     }
 }

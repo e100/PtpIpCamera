@@ -18,5 +18,7 @@
 #include "NikonCamera.h"
 #include "SimCamera.h"
 #include "PtpIpTransport.h"
+#include "PtpSession.h"
 #include "PtpIpSession.h"
+#include "PtpUsbSession.h"   // ESP32-S2/S3 only (PTP_USB_SUPPORTED)
 #include "PtpIpLog.h"

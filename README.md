@@ -305,6 +305,32 @@ Call `cancelPairing()` to abandon pairing at any step. Under the hood, `startPai
 
 ---
 
+## PTP over USB (ESP32-S2/S3)
+
+`NikonCamera` talks to the camera through the `PtpSession` interface, so it runs over WiFi (`PtpIpSession`) or USB (`PtpUsbSession`) unchanged. Canon support is still PTP/IP only.
+
+`PtpUsbSession` uses the ESP-IDF USB Host Library on the chip's USB OTG port (GPIO 19/20 on the S3). The ESP32 is the USB host:
+
+- It must supply 5 V on VBUS to the camera and present itself as a default-power port, so the camera doesn't try to charge from it. A USB-C to USB-A cable into a USB-A socket on the ESP32 side does this; on a USB-C socket, fit 56 kΩ pull-ups from each CC pin to 5 V. A Nikon ZR draws about 25 mA from such a port. A current-limited load switch on VBUS is recommended.
+- The native USB port can't also carry the serial console: build with `ARDUINO_USB_CDC_ON_BOOT=0` and use the UART.
+- Set the camera's USB mode to MTP/PTP. No pairing is needed over USB.
+
+```cpp
+PtpUsbSession usb;
+NikonCamera   camera(usb);
+
+void setup() {
+    usb.begin();                          // installs the USB host stack
+}
+
+void loop() {
+    if (!camera.isReady() && usb.cameraAttached()) camera.begin("usb");   // host string ignored
+    camera.poll();
+}
+```
+
+Tested on a Nikon ZR (firmware V1.11): settings, capture and recording work as over WiFi. The ZR enumerates as `04B0:0458` with the PTP interface at 0: bulk in 0x81, bulk out 0x02, event (interrupt) 0x83, 64-byte packets at full speed.
+
 ## Adding a New Canon Model
 
 If you have a Canon camera that is not yet supported, here is how to add it. The base class `CanonCamera` handles all standard Canon EOS PTP/IP behaviour. You only override what actually differs.

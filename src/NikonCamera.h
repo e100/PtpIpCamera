@@ -1,13 +1,15 @@
 #pragma once
 #include "ICameraControl.h"
-#include "PtpIpSession.h"
+#include "PtpSession.h"
 #include "PtpDeviceInfo.h"
 #include "PtpIpDiag.h"
 
 // ============================================================================
 // NikonCamera
 // Layer 3: Nikon PTP/IP camera control.
-// Depends only on PtpIpSession; has no knowledge of TCP sockets.
+// Depends only on PtpSession, so it runs over PTP/IP (PtpIpSession) or USB
+// (PtpUsbSession). Pairing applies to PTP/IP only: over USB begin() succeeds
+// without it.
 //
 // Exposure uses the standard PTP device properties (FNumber 0x5007,
 // ExposureTime 0x500D, ExposureIndex 0x500F, ExposureBiasCompensation 0x5010,
@@ -75,7 +77,7 @@ struct NikonPropSpec;   // NikonCamera.cpp
 
 class NikonCamera : public ICameraControl {
 public:
-    explicit NikonCamera(PtpIpSession& session);
+    explicit NikonCamera(PtpSession& session);
 
     // -------------------------------------------------------------------------
     // Lifecycle
@@ -272,7 +274,7 @@ protected:
 
     static constexpr uint8_t NIKON_POLL_FAIL_THRESHOLD = 3;
 
-    PtpIpSession&     _session;
+    PtpSession&       _session;
     bool              _ready;
     uint8_t           _pollFailCount;
     char              _host[64];
