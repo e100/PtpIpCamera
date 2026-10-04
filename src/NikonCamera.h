@@ -156,15 +156,24 @@ public:
 
     // The same for any property by its PTP code (e.g. a Nikon vendor property).
     // Integer properties only; others return CAM_E_NOT_SUPPORTED.
-    CameraResult getPropOptions(uint16_t propCode, NikonPropOptions& out);
+    CameraResult getPropOptions(uint32_t propCode, NikonPropOptions& out);
 
     // The raw DevicePropDesc dataset for propCode. data points into an internal
-    // buffer and stays valid until the next camera call.
-    CameraResult readPropDesc(uint16_t propCode, const uint8_t*& data, size_t& len);
+    // buffer and stays valid until the next camera call. Property codes above
+    // 0xFFFF (newer Nikon Z bodies) are accepted; if the camera sends a 32-bit
+    // code at the start of the dataset, it is cut to 16 bits so the dataset
+    // always has the standard layout.
+    CameraResult readPropDesc(uint32_t propCode, const uint8_t*& data, size_t& len);
+
+    // The vendor property codes the camera reports with Nikon GetVendorCodes
+    // (0x9439), including 32-bit codes (0x1Dxxx) on newer Z bodies. These are
+    // not in DeviceInfo. Returns CAM_E_NOT_SUPPORTED if the camera lacks the
+    // operation; count is the number of codes found (only max are stored).
+    CameraResult getVendorPropCodes(uint32_t* codes, size_t max, size_t& count);
 
     // Write any integer property by its PTP code, sized from its DevicePropDesc.
     // For experiments: bypasses the cached state, which poll() then refreshes.
-    CameraResult setPropertyRaw(uint16_t propCode, uint32_t value);
+    CameraResult setPropertyRaw(uint32_t propCode, uint32_t value);
 
     // -------------------------------------------------------------------------
     // Not yet implemented for Nikon — return CAM_E_NOT_SUPPORTED
@@ -236,8 +245,8 @@ protected:
     void _serviceEvents(uint8_t logLevel);
 
     // GetDevicePropValue / SetDevicePropValue for integer properties of 1, 2 or 4 bytes.
-    CameraResult _getProp(uint16_t propCode, uint32_t& value);
-    CameraResult _setProp(uint16_t propCode, uint32_t value, uint8_t size);
+    CameraResult _getProp(uint32_t propCode, uint32_t& value);
+    CameraResult _setProp(uint32_t propCode, uint32_t value, uint8_t size);
 
     CameraResult _mapResponse(uint16_t responseCode) const;
 

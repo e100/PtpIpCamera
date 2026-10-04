@@ -74,6 +74,8 @@ static constexpr uint16_t PTP_OP_CANON_STOP_CAPTURE  = 0x9129;  // release full-
 static constexpr uint16_t PTP_OP_NIKON_GET_PAIRING_CODE = 0x952B;  // data in: uint32 digit count + one byte per digit (0-9)
 static constexpr uint16_t PTP_OP_NIKON_CONFIRM_PAIRING  = 0x935A;  // param1 = NIKON_PAIRING_CONFIRM
 static constexpr uint32_t NIKON_PAIRING_CONFIRM         = 0x00002001;
+static constexpr uint16_t PTP_OP_NIKON_GET_VENDOR_CODES = 0x9439;  // param1 = NIKON_VENDOR_CODES_PROPS; data in: AUINT32
+static constexpr uint32_t NIKON_VENDOR_CODES_PROPS      = 0x0000000D;  // which list: device properties (as libgphoto2)
 
 // Canon GetEventData segment event types (uint32 in the payload)
 static constexpr uint32_t CANON_EVT_PROP_CHANGED     = 0x0000c189; // property value changed

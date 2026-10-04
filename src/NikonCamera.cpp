@@ -545,7 +545,7 @@ static int32_t ptpReadInt(const uint8_t* p, uint8_t size, bool isSigned) {
     return (int32_t)v;
 }
 
-CameraResult NikonCamera::readPropDesc(uint16_t propCode, const uint8_t*& data, size_t& len) {
+CameraResult NikonCamera::readPropDesc(uint32_t propCode, const uint8_t*& data, size_t& len) {
     data = _dataBuf;
     len = 0;
     if (!_ready) return CAM_E_NOT_CONNECTED;
@@ -555,10 +555,49 @@ CameraResult NikonCamera::readPropDesc(uint16_t propCode, const uint8_t*& data, 
         return CAM_E_PROTOCOL;
     }
     if (responseCode != PTP_RSP_OK) {
-        LOG_DEBUG("GetDevicePropDesc 0x%04X: response 0x%04X", propCode, responseCode);
+        LOG_DEBUG("GetDevicePropDesc 0x%04lX: response 0x%04X", (unsigned long)propCode, responseCode);
         return _mapResponse(responseCode);
     }
     if (len < 5) return CAM_E_PROTOCOL;
+    // A 32-bit property may come back with a 32-bit code field. Drop its high
+    // half so the rest of the dataset sits at the standard offsets.
+    if (propCode > 0xFFFF && len >= 9) {
+        uint32_t code32 = (uint32_t)_dataBuf[0] | ((uint32_t)_dataBuf[1] << 8) |
+                          ((uint32_t)_dataBuf[2] << 16) | ((uint32_t)_dataBuf[3] << 24);
+        if (code32 == propCode) {
+            memmove(_dataBuf + 2, _dataBuf + 4, len - 4);
+            len -= 2;
+        }
+    }
+    return CAM_OK;
+}
+
+CameraResult NikonCamera::getVendorPropCodes(uint32_t* codes, size_t max, size_t& count) {
+    count = 0;
+    if (!_ready) return CAM_E_NOT_CONNECTED;
+    if (!_info.supportsOperation(PTP_OP_NIKON_GET_VENDOR_CODES)) return CAM_E_NOT_SUPPORTED;
+    size_t   len = 0;
+    uint16_t responseCode;
+    uint32_t param = NIKON_VENDOR_CODES_PROPS;
+    if (!_session.dataIn(PTP_OP_NIKON_GET_VENDOR_CODES, &param, 1, _dataBuf, sizeof(_dataBuf), len, responseCode)) {
+        return CAM_E_PROTOCOL;
+    }
+    if (responseCode != PTP_RSP_OK) {
+        LOG_WARNING("GetVendorCodes: response 0x%04X", responseCode);
+        return _mapResponse(responseCode);
+    }
+    if (len < 4) return CAM_E_PROTOCOL;
+    uint32_t n = (uint32_t)_dataBuf[0] | ((uint32_t)_dataBuf[1] << 8) |
+                 ((uint32_t)_dataBuf[2] << 16) | ((uint32_t)_dataBuf[3] << 24);
+    if (len < 4 + (size_t)n * 4) {
+        LOG_WARNING("GetVendorCodes: %u codes announced, %u bytes received", (unsigned)n, (unsigned)len);
+        n = (uint32_t)((len - 4) / 4);
+    }
+    for (uint32_t i = 0; i < n && i < max; i++) {
+        const uint8_t* p = _dataBuf + 4 + i * 4;
+        codes[i] = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+    }
+    count = n;
     return CAM_OK;
 }
 
@@ -574,7 +613,7 @@ CameraResult NikonCamera::getPropOptions(CameraProperty prop, NikonPropOptions& 
     return getPropOptions(code, out);
 }
 
-CameraResult NikonCamera::getPropOptions(uint16_t code, NikonPropOptions& out) {
+CameraResult NikonCamera::getPropOptions(uint32_t code, NikonPropOptions& out) {
     out.form = NikonPropOptions::Form::None;
     out.writable = false;
     out.count = 0;
@@ -584,7 +623,7 @@ CameraResult NikonCamera::getPropOptions(uint16_t code, NikonPropOptions& out) {
     size_t len;
     CameraResult r = readPropDesc(code, d, len);
     if (r != CAM_OK) {
-        if (r != CAM_E_NOT_CONNECTED) LOG_WARNING("GetDevicePropDesc 0x%04X: %s", code, cameraResultStr(r));
+        if (r != CAM_E_NOT_CONNECTED) LOG_WARNING("GetDevicePropDesc 0x%04lX: %s", (unsigned long)code, cameraResultStr(r));
         return r;
     }
 
@@ -612,8 +651,8 @@ CameraResult NikonCamera::getPropOptions(uint16_t code, NikonPropOptions& out) {
         pos += 2;
         if (len < pos + (size_t)n * size) return CAM_E_PROTOCOL;
         if (n > NikonPropOptions::MAX_VALUES) {
-            LOG_WARNING("GetDevicePropDesc 0x%04X: %u values, keeping %u",
-                        code, n, (unsigned)NikonPropOptions::MAX_VALUES);
+            LOG_WARNING("GetDevicePropDesc 0x%04lX: %u values, keeping %u",
+                        (unsigned long)code, n, (unsigned)NikonPropOptions::MAX_VALUES);
             out.truncated = true;
             n = NikonPropOptions::MAX_VALUES;
         }
@@ -624,7 +663,7 @@ CameraResult NikonCamera::getPropOptions(uint16_t code, NikonPropOptions& out) {
     return CAM_OK;
 }
 
-CameraResult NikonCamera::setPropertyRaw(uint16_t propCode, uint32_t value) {
+CameraResult NikonCamera::setPropertyRaw(uint32_t propCode, uint32_t value) {
     const uint8_t* d;
     size_t len;
     CameraResult r = readPropDesc(propCode, d, len);
@@ -725,7 +764,7 @@ void NikonCamera::setOnBracketedShotComplete(BracketedShotCompleteCb cb, void* c
 // Property helpers
 // ============================================================================
 
-CameraResult NikonCamera::_getProp(uint16_t propCode, uint32_t& value) {
+CameraResult NikonCamera::_getProp(uint32_t propCode, uint32_t& value) {
     uint8_t  data[8];
     size_t   dataLen = 0;
     uint16_t responseCode;
@@ -735,11 +774,11 @@ CameraResult NikonCamera::_getProp(uint16_t propCode, uint32_t& value) {
         return CAM_E_PROTOCOL;
     }
     if (responseCode != PTP_RSP_OK) {
-        LOG_DEBUG("GetDevicePropValue 0x%04X: response 0x%04X", propCode, responseCode);
+        LOG_DEBUG("GetDevicePropValue 0x%04lX: response 0x%04X", (unsigned long)propCode, responseCode);
         return _mapResponse(responseCode);
     }
     if (dataLen == 0 || dataLen > 4) {
-        LOG_ERROR("GetDevicePropValue 0x%04X: unexpected %u-byte value", propCode, (unsigned)dataLen);
+        LOG_ERROR("GetDevicePropValue 0x%04lX: unexpected %u-byte value", (unsigned long)propCode, (unsigned)dataLen);
         return CAM_E_PROTOCOL;
     }
     value = 0;
@@ -747,7 +786,7 @@ CameraResult NikonCamera::_getProp(uint16_t propCode, uint32_t& value) {
     return CAM_OK;
 }
 
-CameraResult NikonCamera::_setProp(uint16_t propCode, uint32_t value, uint8_t size) {
+CameraResult NikonCamera::_setProp(uint32_t propCode, uint32_t value, uint8_t size) {
     uint8_t data[4];
     for (uint8_t i = 0; i < size; i++) data[i] = (uint8_t)(value >> (8 * i));
     uint16_t responseCode;
@@ -756,8 +795,8 @@ CameraResult NikonCamera::_setProp(uint16_t propCode, uint32_t value, uint8_t si
         return CAM_E_PROTOCOL;
     }
     if (responseCode != PTP_RSP_OK) {
-        LOG_WARNING("SetDevicePropValue 0x%04X = %u: response 0x%04X",
-                    propCode, (unsigned)value, responseCode);
+        LOG_WARNING("SetDevicePropValue 0x%04lX = %u: response 0x%04X",
+                    (unsigned long)propCode, (unsigned)value, responseCode);
     }
     return _mapResponse(responseCode);
 }

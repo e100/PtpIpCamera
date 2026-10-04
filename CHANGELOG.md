@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   properties (0xD1A8-0xD1AB), and white balance uses 0xD23A. `movieMode()`
   reports the switch.
 - `NikonCamera::setPropertyRaw()`: write any integer property by PTP code.
+- `NikonCamera::getVendorPropCodes()`: the vendor property list from Nikon
+  GetVendorCodes (0x9439), including 32-bit codes on newer Z bodies.
+  `readPropDesc()`, `getPropOptions()` and `setPropertyRaw()` take 32-bit codes.
 - `CAM_E_NOT_PAIRED` result code.
 - `PtpDeviceInfo` / `ptpParseDeviceInfo()`: header-only parser for the DeviceInfo dataset.
 - `PtpIpSession::dataIn()` / `dataOut()`: transactions using the PTP/IP specification's
