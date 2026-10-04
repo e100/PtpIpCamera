@@ -16,21 +16,25 @@ static constexpr uint8_t NIKON_KNOWN_WB       = 0x10;
 static constexpr uint8_t NIKON_KNOWN_PROGRAM  = 0x20;
 
 // Exposure properties kept in NikonState, in the order poll() reads them.
+// `code` (the standard photo property) also identifies the state field; in
+// movie mode the camera is read and written through movieCode instead.
 struct NikonPropSpec {
     uint16_t       code;
     uint8_t        size;       // bytes on the wire
+    uint16_t       movieCode;  // 0 = same property in both modes
+    uint8_t        movieSize;
     uint8_t        knownBit;
     bool           reportable; // has a CameraProperty for onPropChanged
     CameraProperty prop;
 };
 
 static const NikonPropSpec NIKON_PROPS[] = {
-    { PTP_PROP_APERTURE,         2, NIKON_KNOWN_FNUMBER,  true,  CameraProperty::APERTURE },
-    { PTP_PROP_SHUTTER_SPEED,    4, NIKON_KNOWN_EXPOSURE, true,  CameraProperty::SHUTTER_SPEED },
-    { PTP_PROP_ISO,              2, NIKON_KNOWN_ISO,      true,  CameraProperty::ISO },
-    { PTP_PROP_EXPOSURE_BIAS,    2, NIKON_KNOWN_BIAS,     true,  CameraProperty::EXPOSURE_COMPENSATION },
-    { PTP_PROP_WHITE_BALANCE,    2, NIKON_KNOWN_WB,       true,  CameraProperty::WHITE_BALANCE },
-    { PTP_PROP_EXPOSURE_PROGRAM, 2, NIKON_KNOWN_PROGRAM,  false, CameraProperty::APERTURE },
+    { PTP_PROP_APERTURE,         2, NIKON_PROP_MOVIE_FNUMBER, 2, NIKON_KNOWN_FNUMBER,  true,  CameraProperty::APERTURE },
+    { PTP_PROP_SHUTTER_SPEED,    4, NIKON_PROP_MOVIE_SHUTTER, 4, NIKON_KNOWN_EXPOSURE, true,  CameraProperty::SHUTTER_SPEED },
+    { PTP_PROP_ISO,              2, NIKON_PROP_MOVIE_ISO,     4, NIKON_KNOWN_ISO,      true,  CameraProperty::ISO },
+    { PTP_PROP_EXPOSURE_BIAS,    2, NIKON_PROP_MOVIE_BIAS,    2, NIKON_KNOWN_BIAS,     true,  CameraProperty::EXPOSURE_COMPENSATION },
+    { PTP_PROP_WHITE_BALANCE,    2, 0,                        0, NIKON_KNOWN_WB,       true,  CameraProperty::WHITE_BALANCE },
+    { PTP_PROP_EXPOSURE_PROGRAM, 2, 0,                        0, NIKON_KNOWN_PROGRAM,  false, CameraProperty::APERTURE },
 };
 
 static uint32_t stateField(const NikonState& s, uint16_t code) {
@@ -49,7 +53,7 @@ static void setStateField(NikonState& s, uint16_t code, uint32_t v) {
     switch (code) {
         case PTP_PROP_APERTURE:         s.fNumber      = (uint16_t)v; break;
         case PTP_PROP_SHUTTER_SPEED:    s.exposureTime = v;           break;
-        case PTP_PROP_ISO:              s.iso          = (uint16_t)v; break;
+        case PTP_PROP_ISO:              s.iso          = v;           break;
         case PTP_PROP_EXPOSURE_BIAS:    s.exposureBias = (int16_t)(uint16_t)v; break;
         case PTP_PROP_WHITE_BALANCE:    s.whiteBalance = (uint16_t)v; break;
         case PTP_PROP_EXPOSURE_PROGRAM: s.program      = (uint16_t)v; break;
@@ -86,6 +90,8 @@ NikonCamera::NikonCamera(PtpIpSession& session)
     , _pairState(NikonPairingState::IDLE)
     , _info{}
     , _cameraConfirmed(false)
+    , _movie(false)
+    , _hasModeProp(true)
     , _onPropChanged(nullptr),       _onPropChangedCtx(nullptr)
     , _onCaptureComplete(nullptr),   _onCaptureCompleteCtx(nullptr)
     , _onConnectionChanged(nullptr), _onConnectionChangedCtx(nullptr)
@@ -123,6 +129,8 @@ CameraResult NikonCamera::begin(const char* host) {
     _pollFailCount = 0;
     _state = {};
     _pairState = NikonPairingState::IDLE;
+    _movie = false;
+    _hasModeProp = true;    // re-detect: an unpaired camera refuses every property
 
     CameraResult r = _open(host);
     if (r != CAM_OK) return r;
@@ -382,12 +390,15 @@ void NikonCamera::poll() {
 }
 
 CameraResult NikonCamera::_refreshState(bool fireCallbacks) {
+    _readMode();
     for (const NikonPropSpec& p : NIKON_PROPS) {
         if (!_hasProp(p.code)) continue;
+        bool movieProp = _movie && p.movieCode;
 
         uint32_t value = 0;
-        CameraResult r = _getProp(p.code, value);
+        CameraResult r = _getProp(movieProp ? p.movieCode : p.code, value);
         if (r == CAM_E_BUSY) continue;   // try again next poll
+        if (movieProp && r != CAM_OK && r != CAM_E_PROTOCOL && r != CAM_E_TIMEOUT) continue;
         if (r != CAM_OK) {
             // An unpaired Nikon refuses property access rather than omitting it
             if ((r == CAM_E_NOT_SUPPORTED || r == CAM_E_NOT_READY) &&
@@ -411,6 +422,23 @@ CameraResult NikonCamera::_refreshState(bool fireCallbacks) {
         }
     }
     return CAM_OK;
+}
+
+bool NikonCamera::_readMode() {
+    if (!_hasModeProp) return false;
+    uint32_t v;
+    CameraResult r = _getProp(NIKON_PROP_PHOTO_MOVIE, v);
+    if (r == CAM_E_NOT_SUPPORTED) {
+        _hasModeProp = false;    // body without a photo/movie switch: always photo
+        _movie = false;
+        return false;
+    }
+    if (r != CAM_OK) return false;
+    bool movie = v == 1;
+    if (movie == _movie) return false;
+    _movie = movie;
+    LOG_INFO("Camera switched to %s mode", movie ? "movie" : "photo");
+    return true;
 }
 
 void NikonCamera::_serviceEvents(uint8_t logLevel) {
@@ -446,12 +474,19 @@ CameraResult NikonCamera::setAperture(float fstop) {
 
 CameraResult NikonCamera::setShutterSpeed(float seconds) {
     if (!(seconds > 0.0f)) return CAM_E_INVALID_ARG;
+    if (_movie) {
+        // numerator << 16 | denominator: 1/n for fast speeds, whole seconds otherwise
+        uint32_t raw = seconds >= 1.0f ? ((uint32_t)lroundf(seconds) << 16) | 1u
+                                       : (1u << 16) | (uint32_t)lroundf(1.0f / seconds);
+        return setCameraProperty(CameraProperty::SHUTTER_SPEED, raw);
+    }
     long units = lroundf(seconds * 10000.0f);
     if (units < 1) return CAM_E_INVALID_ARG;   // faster than 1/10000 s is not representable
     return setCameraProperty(CameraProperty::SHUTTER_SPEED, (uint32_t)units);
 }
 
 CameraResult NikonCamera::setISO(uint16_t iso) {
+    // ISO is UINT16 in photo mode and UINT32 in movie mode; _setProp sizes it
     if (iso == 0) return CAM_E_INVALID_ARG;
     return setCameraProperty(CameraProperty::ISO, iso);
 }
@@ -468,7 +503,9 @@ CameraResult NikonCamera::setCameraProperty(CameraProperty prop, uint32_t value)
     const NikonPropSpec* spec = findSpec(code);
     if (spec == nullptr || !_hasProp(code)) return CAM_E_NOT_SUPPORTED;
 
-    CameraResult r = _setProp(code, value, spec->size);
+    bool movieProp = _movie && spec->movieCode;
+    CameraResult r = movieProp ? _setProp(spec->movieCode, value, spec->movieSize)
+                               : _setProp(code, value, spec->size);
     if (r == CAM_OK) {
         setStateField(_state, code, value);
         _state.known |= spec->knownBit;
@@ -486,7 +523,7 @@ CameraResult NikonCamera::getCameraProperty(CameraProperty prop, uint32_t& value
         value = stateField(_state, code);
         return CAM_OK;
     }
-    return _getProp(code, value);
+    return _getProp(_movie && spec->movieCode ? spec->movieCode : code, value);
 }
 
 // PTP integer data types: 1 = INT8, 2 = UINT8, ... 8 = UINT64. Returns the size
@@ -532,6 +569,8 @@ CameraResult NikonCamera::getPropOptions(CameraProperty prop, NikonPropOptions& 
         out.count = 0;
         return CAM_E_NOT_SUPPORTED;
     }
+    const NikonPropSpec* spec = findSpec(code);
+    if (_movie && spec && spec->movieCode) code = spec->movieCode;
     return getPropOptions(code, out);
 }
 
@@ -630,8 +669,15 @@ CameraResult NikonCamera::getSettings(CameraSettings& out) {
 
     // FNumber 0 = no lens, or a lens without electronic contacts: leave as unknown
     if ((_state.known & NIKON_KNOWN_FNUMBER) && _state.fNumber != 0) out.aperture = _state.fNumber / 100.0f;
-    if (_state.known & NIKON_KNOWN_EXPOSURE) out.shutterSpeed = _state.exposureTime / 10000.0f;
-    if (_state.known & NIKON_KNOWN_ISO)      out.iso = _state.iso;
+    if (_state.known & NIKON_KNOWN_EXPOSURE) {
+        if (!_movie) {
+            out.shutterSpeed = _state.exposureTime / 10000.0f;
+        } else {
+            uint32_t num = _state.exposureTime >> 16, den = _state.exposureTime & 0xFFFF;
+            if (den != 0) out.shutterSpeed = (float)num / den;
+        }
+    }
+    if (_state.known & NIKON_KNOWN_ISO)      out.iso = _state.iso > 0xFFFF ? 0xFFFF : (uint16_t)_state.iso;
     if (_state.known & NIKON_KNOWN_BIAS)     out.exposureCompensation = _state.exposureBias / 1000.0f;
     if (_state.known & NIKON_KNOWN_PROGRAM)  out.mode = _modeStr(_state.program);
     return CAM_OK;

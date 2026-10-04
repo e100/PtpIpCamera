@@ -117,6 +117,13 @@ static constexpr uint16_t PTP_PROP_EXPOSURE_PROGRAM = 0x500E;  // UINT16 enum
 static constexpr uint16_t PTP_PROP_ISO           = 0x500F;  // UINT16
 static constexpr uint16_t PTP_PROP_EXPOSURE_BIAS = 0x5010;  // INT16, EV * 1000
 
+// Nikon vendor properties (seen on a ZR; not listed in its DeviceInfo)
+static constexpr uint16_t NIKON_PROP_PHOTO_MOVIE   = 0xd1a6;  // UINT8: 0 = photo, 1 = movie (camera's switch)
+static constexpr uint16_t NIKON_PROP_MOVIE_SHUTTER = 0xd1a8;  // UINT32: numerator << 16 | denominator seconds
+static constexpr uint16_t NIKON_PROP_MOVIE_FNUMBER = 0xd1a9;  // UINT16, f-number * 100
+static constexpr uint16_t NIKON_PROP_MOVIE_ISO     = 0xd1aa;  // UINT32
+static constexpr uint16_t NIKON_PROP_MOVIE_BIAS    = 0xd1ab;  // INT16, EV * 1000
+
 // Canon vendor property codes (used with PTP_OP_CANON_SET_PROP 0x9110)
 // Values are APEX-encoded single bytes; see CanonExposure.h for the full tables.
 //   Aperture   0xd101  e.g. f/5.6  -> 0x30

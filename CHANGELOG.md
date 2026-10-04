@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `NikonCamera::getPropOptions()`: reads a property's allowed values (list or
   range), current value and whether it is writable, via GetDevicePropDesc (0x1014).
   Overload by PTP property code, and `readPropDesc()` for the raw dataset.
+- `NikonCamera` follows the camera's photo/movie switch (Nikon property 0xD1A6):
+  in movie mode aperture, shutter, ISO and exposure compensation use the movie
+  properties (0xD1A8-0xD1AB). `movieMode()` reports the switch.
 - `CAM_E_NOT_PAIRED` result code.
 - `PtpDeviceInfo` / `ptpParseDeviceInfo()`: header-only parser for the DeviceInfo dataset.
 - `PtpIpSession::dataIn()` / `dataOut()`: transactions using the PTP/IP specification's

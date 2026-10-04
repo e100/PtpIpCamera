@@ -59,11 +59,12 @@ struct NikonPropOptions {
     int32_t  values[MAX_VALUES];
 };
 
-// Cached exposure state, kept current by poll(). Values are raw PTP units.
+// Cached exposure state, kept current by poll(). Values are raw PTP units,
+// from the movie properties while the camera is in movie mode.
 struct NikonState {
     uint16_t fNumber;        // f-number * 100
-    uint32_t exposureTime;   // seconds * 10000
-    uint16_t iso;
+    uint32_t exposureTime;   // seconds * 10000; movie mode: numerator << 16 | denominator
+    uint32_t iso;
     int16_t  exposureBias;   // EV * 1000
     uint16_t whiteBalance;
     uint16_t program;        // ExposureProgramMode
@@ -121,6 +122,14 @@ public:
 
     NikonPairingState pairingState() const { return _pairState; }
 
+    // True while the camera's photo/movie switch is on movie (read by begin()
+    // and poll()). Exposure then uses the movie properties: APERTURE,
+    // SHUTTER_SPEED, ISO and EXPOSURE_COMPENSATION address the movie settings,
+    // and SHUTTER_SPEED's raw value is numerator << 16 | denominator seconds
+    // (0x0001007D = 1/125 s) instead of seconds * 10000. The typed setters and
+    // getSettings() convert either way. False on bodies without the switch.
+    bool movieMode() const { return _movie; }
+
     // DeviceInfo read during begin(); empty strings / zero counts before that.
     const PtpDeviceInfo& deviceInfo() const { return _info; }
 
@@ -132,8 +141,9 @@ public:
     CameraResult setShutterSpeed(float seconds) override;
     CameraResult setISO(uint16_t iso) override;
 
-    // Raw PTP units: APERTURE f*100, SHUTTER_SPEED s*10000, ISO,
-    // EXPOSURE_COMPENSATION EV*1000 (as int16), WHITE_BALANCE PTP enum.
+    // Raw PTP units: APERTURE f*100, SHUTTER_SPEED s*10000 (movie mode: see
+    // movieMode()), ISO, EXPOSURE_COMPENSATION EV*1000 (as int16),
+    // WHITE_BALANCE PTP enum.
     CameraResult setCameraProperty(CameraProperty prop, uint32_t value) override;
     CameraResult getCameraProperty(CameraProperty prop, uint32_t& value) override;
 
@@ -199,6 +209,8 @@ protected:
     NikonPairingState _pairState;
     PtpDeviceInfo     _info;
     bool              _cameraConfirmed;   // 0x4008 seen while AWAITING_CAMERA
+    bool              _movie;             // camera's photo/movie switch is on movie
+    bool              _hasModeProp;       // camera answers NIKON_PROP_PHOTO_MOVIE
     uint8_t           _dataBuf[8192];   // DeviceInfo and other data-in payloads
 
     PropChangedCb           _onPropChanged;       void* _onPropChangedCtx;
@@ -227,4 +239,7 @@ protected:
     // DeviceInfo lists the property, or lists none at all (the ZR's restricted
     // pre-authentication DeviceInfo, which can't be trusted to be complete).
     bool _hasProp(uint16_t code) const;
+
+    // Read the photo/movie switch. Returns true if the mode changed.
+    bool _readMode();
 };
