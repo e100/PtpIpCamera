@@ -419,8 +419,15 @@ void NikonCamera::_serviceEvents(uint8_t logLevel) {
     size_t   len;
     while (_session.pollEventChannel(type, payload, sizeof(payload), len)) {
         if (type == PTPIP_TYPE_EVENT && len >= 2) {
+            // Event: code u16, transaction ID u32, then up to three u32 parameters
             uint16_t code = (uint16_t)payload[0] | ((uint16_t)payload[1] << 8);
-            _ptpLog(logLevel, LOG_TAG, "event 0x%04X (%u bytes)", code, (unsigned)len);
+            if (len >= 10) {
+                uint32_t p1 = (uint32_t)payload[6] | ((uint32_t)payload[7] << 8) |
+                              ((uint32_t)payload[8] << 16) | ((uint32_t)payload[9] << 24);
+                _ptpLog(logLevel, LOG_TAG, "event 0x%04X param 0x%04X", code, (unsigned)p1);
+            } else {
+                _ptpLog(logLevel, LOG_TAG, "event 0x%04X (%u bytes)", code, (unsigned)len);
+            }
         } else {
             _ptpLog(logLevel, LOG_TAG, "event channel packet type 0x%02X (%u bytes)",
                     (unsigned)type, (unsigned)len);
