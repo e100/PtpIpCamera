@@ -71,6 +71,8 @@ struct NikonState {
     uint8_t  known;          // bitmask of NIKON_KNOWN_* — which fields have been read
 };
 
+struct NikonPropSpec;   // NikonCamera.cpp
+
 class NikonCamera : public ICameraControl {
 public:
     explicit NikonCamera(PtpIpSession& session);
@@ -160,9 +162,9 @@ public:
 
     // The raw DevicePropDesc dataset for propCode. data points into an internal
     // buffer and stays valid until the next camera call. Property codes above
-    // 0xFFFF (newer Nikon Z bodies) are accepted; if the camera sends a 32-bit
-    // code at the start of the dataset, it is cut to 16 bits so the dataset
-    // always has the standard layout.
+    // 0xFFFF (newer Nikon Z bodies) are read with Nikon's Ex operations
+    // (0x943A-0x943C); their dataset starts with a 32-bit code, which is cut
+    // to 16 bits so the dataset always has the standard layout.
     CameraResult readPropDesc(uint32_t propCode, const uint8_t*& data, size_t& len);
 
     // The vendor property codes the camera reports with Nikon GetVendorCodes
@@ -256,4 +258,11 @@ protected:
 
     // Read the photo/movie switch. Returns true if the mode changed.
     bool _readMode();
+
+    // The property a spec addresses in movie mode (0 = same as photo).
+    uint32_t _movieCode(const NikonPropSpec& spec) const;
+    uint8_t  _movieSize(const NikonPropSpec& spec) const;
+
+    // The camera has Nikon's 32-bit property operations (0x943A-0x943C).
+    bool _hasExProps() const;
 };

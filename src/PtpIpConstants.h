@@ -74,6 +74,10 @@ static constexpr uint16_t PTP_OP_CANON_STOP_CAPTURE  = 0x9129;  // release full-
 static constexpr uint16_t PTP_OP_NIKON_GET_PAIRING_CODE = 0x952B;  // data in: uint32 digit count + one byte per digit (0-9)
 static constexpr uint16_t PTP_OP_NIKON_CONFIRM_PAIRING  = 0x935A;  // param1 = NIKON_PAIRING_CONFIRM
 static constexpr uint32_t NIKON_PAIRING_CONFIRM         = 0x00002001;
+static constexpr uint16_t PTP_OP_NIKON_CHANGE_APP_MODE  = 0x9435;  // param1 = 1: remote application mode (NX Tether sends it after OpenSession)
+static constexpr uint16_t PTP_OP_NIKON_GET_PROP_DESC_EX = 0x943A;  // GetDevicePropDesc for 32-bit property codes (dataset starts with a UINT32 code)
+static constexpr uint16_t PTP_OP_NIKON_GET_PROP_EX      = 0x943B;  // GetDevicePropValue for 32-bit property codes
+static constexpr uint16_t PTP_OP_NIKON_SET_PROP_EX      = 0x943C;  // SetDevicePropValue for 32-bit property codes
 static constexpr uint16_t PTP_OP_NIKON_GET_VENDOR_CODES = 0x9439;  // param1 = NIKON_VENDOR_CODES_PROPS; data in: AUINT32
 static constexpr uint32_t NIKON_VENDOR_CODES_PROPS      = 0x0000000D;  // which list: device properties (as libgphoto2)
 
@@ -126,6 +130,8 @@ static constexpr uint16_t NIKON_PROP_MOVIE_FNUMBER = 0xd1a9;  // UINT16, f-numbe
 static constexpr uint16_t NIKON_PROP_MOVIE_ISO     = 0xd1aa;  // UINT32
 static constexpr uint16_t NIKON_PROP_MOVIE_BIAS    = 0xd1ab;  // INT16, EV * 1000
 static constexpr uint16_t NIKON_PROP_MOVIE_WB      = 0xd23a;  // UINT16, PTP white balance enum
+// 32-bit vendor properties (Ex operations). Seen on a ZR in NX Tether traffic.
+static constexpr uint32_t NIKON_PROP_MOVIE_ISO_EX  = 0x1d09e;  // UINT32 movie ISO; writable where 0xD1AA is not
 
 // Canon vendor property codes (used with PTP_OP_CANON_SET_PROP 0x9110)
 // Values are APEX-encoded single bytes; see CanonExposure.h for the full tables.

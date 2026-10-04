@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   properties (0xD1A8-0xD1AB), and white balance uses 0xD23A. `movieMode()`
   reports the switch.
 - `NikonCamera::setPropertyRaw()`: write any integer property by PTP code.
+- `NikonCamera`: 32-bit vendor properties use Nikon's Ex operations
+  (GetDevicePropDescEx 0x943A, GetDevicePropValueEx 0x943B,
+  SetDevicePropValueEx 0x943C), identified from NX Tether traffic. Movie ISO
+  uses 0x1D09E where those operations exist (the ZR's 0xD1AA is read-only).
+  `begin()` sends ChangeApplicationMode(1) (0x9435) when supported, as NX Tether does.
 - `NikonCamera::getVendorPropCodes()`: the vendor property list from Nikon
   GetVendorCodes (0x9439), including 32-bit codes on newer Z bodies.
   `readPropDesc()`, `getPropOptions()` and `setPropertyRaw()` take 32-bit codes.

@@ -162,6 +162,15 @@ CameraResult NikonCamera::begin(const char* host) {
                  _info.numOperations, opsBefore);
     }
 
+    // NX Tether switches the camera to remote application mode before changing
+    // settings; do the same. Failure is not fatal.
+    if (_info.supportsOperation(PTP_OP_NIKON_CHANGE_APP_MODE)) {
+        uint16_t rc;
+        if (!_session.sendCommand(PTP_OP_NIKON_CHANGE_APP_MODE, rc, 1) || rc != PTP_RSP_OK) {
+            LOG_WARNING("ChangeApplicationMode(1) failed (response 0x%04X)", rc);
+        }
+    }
+
     if (!_extraInit()) {
         LOG_ERROR("begin: model-specific init failed");
         _session.closeSession();
@@ -393,10 +402,11 @@ CameraResult NikonCamera::_refreshState(bool fireCallbacks) {
     _readMode();
     for (const NikonPropSpec& p : NIKON_PROPS) {
         if (!_hasProp(p.code)) continue;
-        bool movieProp = _movie && p.movieCode;
+        uint32_t movieCode = _movie ? _movieCode(p) : 0;
+        bool movieProp = movieCode != 0;
 
         uint32_t value = 0;
-        CameraResult r = _getProp(movieProp ? p.movieCode : p.code, value);
+        CameraResult r = _getProp(movieProp ? movieCode : p.code, value);
         if (r == CAM_E_BUSY) continue;   // try again next poll
         if (movieProp && r != CAM_OK && r != CAM_E_PROTOCOL && r != CAM_E_TIMEOUT) continue;
         if (r != CAM_OK) {
@@ -422,6 +432,22 @@ CameraResult NikonCamera::_refreshState(bool fireCallbacks) {
         }
     }
     return CAM_OK;
+}
+
+bool NikonCamera::_hasExProps() const {
+    return _info.supportsOperation(PTP_OP_NIKON_GET_PROP_EX) && _info.supportsOperation(PTP_OP_NIKON_SET_PROP_EX) &&
+           _info.supportsOperation(PTP_OP_NIKON_GET_PROP_DESC_EX);
+}
+
+// Movie ISO: the ZR's 0xD1AA is read-only; NX Tether writes 32-bit 0x1D09E.
+uint32_t NikonCamera::_movieCode(const NikonPropSpec& spec) const {
+    if (spec.code == PTP_PROP_ISO && _hasExProps()) return NIKON_PROP_MOVIE_ISO_EX;
+    return spec.movieCode;
+}
+
+uint8_t NikonCamera::_movieSize(const NikonPropSpec& spec) const {
+    if (spec.code == PTP_PROP_ISO && _hasExProps()) return 4;
+    return spec.movieSize;
 }
 
 bool NikonCamera::_readMode() {
@@ -503,8 +529,8 @@ CameraResult NikonCamera::setCameraProperty(CameraProperty prop, uint32_t value)
     const NikonPropSpec* spec = findSpec(code);
     if (spec == nullptr || !_hasProp(code)) return CAM_E_NOT_SUPPORTED;
 
-    bool movieProp = _movie && spec->movieCode;
-    CameraResult r = movieProp ? _setProp(spec->movieCode, value, spec->movieSize)
+    uint32_t movieCode = _movie ? _movieCode(*spec) : 0;
+    CameraResult r = movieCode ? _setProp(movieCode, value, _movieSize(*spec))
                                : _setProp(code, value, spec->size);
     if (r == CAM_OK) {
         setStateField(_state, code, value);
@@ -523,7 +549,7 @@ CameraResult NikonCamera::getCameraProperty(CameraProperty prop, uint32_t& value
         value = stateField(_state, code);
         return CAM_OK;
     }
-    return _getProp(_movie && spec->movieCode ? spec->movieCode : code, value);
+    return _getProp(_movie && _movieCode(*spec) ? _movieCode(*spec) : code, value);
 }
 
 // PTP integer data types: 1 = INT8, 2 = UINT8, ... 8 = UINT64. Returns the size
@@ -551,7 +577,8 @@ CameraResult NikonCamera::readPropDesc(uint32_t propCode, const uint8_t*& data, 
     if (!_ready) return CAM_E_NOT_CONNECTED;
     uint16_t responseCode;
     uint32_t param = propCode;
-    if (!_session.dataIn(PTP_OP_GET_PROP_DESC, &param, 1, _dataBuf, sizeof(_dataBuf), len, responseCode)) {
+    uint16_t op = (propCode > 0xFFFF && _hasExProps()) ? PTP_OP_NIKON_GET_PROP_DESC_EX : PTP_OP_GET_PROP_DESC;
+    if (!_session.dataIn(op, &param, 1, _dataBuf, sizeof(_dataBuf), len, responseCode)) {
         return CAM_E_PROTOCOL;
     }
     if (responseCode != PTP_RSP_OK) {
@@ -559,8 +586,8 @@ CameraResult NikonCamera::readPropDesc(uint32_t propCode, const uint8_t*& data, 
         return _mapResponse(responseCode);
     }
     if (len < 5) return CAM_E_PROTOCOL;
-    // A 32-bit property may come back with a 32-bit code field. Drop its high
-    // half so the rest of the dataset sits at the standard offsets.
+    // The Ex dataset starts with a 32-bit code field. Drop its high half so
+    // the rest of the dataset sits at the standard offsets.
     if (propCode > 0xFFFF && len >= 9) {
         uint32_t code32 = (uint32_t)_dataBuf[0] | ((uint32_t)_dataBuf[1] << 8) |
                           ((uint32_t)_dataBuf[2] << 16) | ((uint32_t)_dataBuf[3] << 24);
@@ -609,8 +636,9 @@ CameraResult NikonCamera::getPropOptions(CameraProperty prop, NikonPropOptions& 
         return CAM_E_NOT_SUPPORTED;
     }
     const NikonPropSpec* spec = findSpec(code);
-    if (_movie && spec && spec->movieCode) code = spec->movieCode;
-    return getPropOptions(code, out);
+    uint32_t wire = code;
+    if (_movie && spec && _movieCode(*spec)) wire = _movieCode(*spec);
+    return getPropOptions(wire, out);
 }
 
 CameraResult NikonCamera::getPropOptions(uint32_t code, NikonPropOptions& out) {
@@ -769,7 +797,8 @@ CameraResult NikonCamera::_getProp(uint32_t propCode, uint32_t& value) {
     size_t   dataLen = 0;
     uint16_t responseCode;
     uint32_t param = propCode;
-    if (!_session.dataIn(PTP_OP_GET_DEVICE_PROP, &param, 1,
+    uint16_t op = (propCode > 0xFFFF && _hasExProps()) ? PTP_OP_NIKON_GET_PROP_EX : PTP_OP_GET_DEVICE_PROP;
+    if (!_session.dataIn(op, &param, 1,
                          data, sizeof(data), dataLen, responseCode)) {
         return CAM_E_PROTOCOL;
     }
@@ -791,7 +820,8 @@ CameraResult NikonCamera::_setProp(uint32_t propCode, uint32_t value, uint8_t si
     for (uint8_t i = 0; i < size; i++) data[i] = (uint8_t)(value >> (8 * i));
     uint16_t responseCode;
     uint32_t param = propCode;
-    if (!_session.dataOut(PTP_OP_SET_DEVICE_PROP, &param, 1, data, size, responseCode)) {
+    uint16_t op = (propCode > 0xFFFF && _hasExProps()) ? PTP_OP_NIKON_SET_PROP_EX : PTP_OP_SET_DEVICE_PROP;
+    if (!_session.dataOut(op, &param, 1, data, size, responseCode)) {
         return CAM_E_PROTOCOL;
     }
     if (responseCode != PTP_RSP_OK) {
