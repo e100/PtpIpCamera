@@ -516,6 +516,15 @@ bool NikonCamera::_readMode() {
     if (movie && _hasExProps() && _getProp(NIKON_PROP_MOVIE_SHUTTER_MODE_EX, v) == CAM_OK) {
         angle = v == NIKON_SHUTTER_MODE_ANGLE;
     }
+    // Recording state, whoever started it (camera body or us)
+    if (movie && _getProp(NIKON_PROP_MOV_REC_PROHIBIT, v) == CAM_OK) {
+        bool rec = (v & NIKON_MOV_PROHIBIT_RECORDING) != 0;
+        if (rec != _recording) LOG_INFO("Movie recording %s", rec ? "on" : "off");
+        _recording = rec;
+    } else if (!movie) {
+        _recording = false;
+    }
+
     if (movie == _movie && angle == _angle) return false;
     if (movie != _movie) LOG_INFO("Camera switched to %s mode", movie ? "movie" : "photo");
     if (angle != _angle) LOG_INFO("Movie shutter switched to %s", angle ? "angle" : "speed");
@@ -836,6 +845,7 @@ CameraResult NikonCamera::startMovie() {
     _lastProhibit = 0;
     uint32_t bits = 0;
     if (getMovieProhibit(bits) == CAM_OK && bits != 0) {
+        if (bits & NIKON_MOV_PROHIBIT_RECORDING) _recording = true;
         _lastProhibit = bits;
         LOG_WARNING("Movie recording can't start: %s (MovRecProhibitCondition 0x%08lX)",
                     movieProhibitText(bits), (unsigned long)bits);
@@ -851,7 +861,7 @@ CameraResult NikonCamera::startMovie() {
     CameraResult r = _command(PTP_OP_NIKON_START_MOVIE);
     if (r == CAM_OK) {
         _recording = true;
-        LOG_INFO("Movie recording started");
+        LOG_INFO("Movie recording started from the grip");
     }
     return r;
 }
@@ -861,7 +871,7 @@ CameraResult NikonCamera::stopMovie() {
     CameraResult r = _command(PTP_OP_NIKON_END_MOVIE);
     if (r == CAM_OK) {
         _recording = false;
-        LOG_INFO("Movie recording stopped");
+        LOG_INFO("Movie recording stopped from the grip");
         _waitReady(3000);
         if (_info.supportsOperation(PTP_OP_NIKON_END_LIVEVIEW)) _command(PTP_OP_NIKON_END_LIVEVIEW);
     }

@@ -46,7 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `initiateCapture()` / `releaseShutter()` (InitiateCaptureRecInMedia 0x9207,
   with / without AF, to the card), `autofocus()` (AfDrive 0x90C1),
   `startMovie()` / `stopMovie()` (live view, then StartMovieRecInCard 0x920A /
-  EndMovieRec 0x920B), `isRecording()`. DeviceReady (0x90C8) is polled around them.
+  EndMovieRec 0x920B), `isRecording()`, which follows the camera
+  (MovRecProhibitCondition 0xD0A4 bit 10), whoever started the recording. DeviceReady (0x90C8) is polled around them.
 - `CAM_E_NOT_PAIRED` result code.
 - `PtpDeviceInfo` / `ptpParseDeviceInfo()`: header-only parser for the DeviceInfo dataset.
 - `PtpIpSession::dataIn()` / `dataOut()`: transactions using the PTP/IP specification's

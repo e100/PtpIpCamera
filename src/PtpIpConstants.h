@@ -141,6 +141,7 @@ static constexpr uint16_t NIKON_PROP_MOVIE_ISO     = 0xd1aa;  // UINT32
 static constexpr uint16_t NIKON_PROP_MOVIE_BIAS    = 0xd1ab;  // INT16, EV * 1000
 static constexpr uint16_t NIKON_PROP_MOVIE_WB      = 0xd23a;  // UINT16, PTP white balance enum
 static constexpr uint16_t NIKON_PROP_MOV_REC_PROHIBIT = 0xd0a4;  // UINT32 bitmask of reasons movie recording can't start (0 = can)
+static constexpr uint32_t NIKON_MOV_PROHIBIT_RECORDING = 1u << 10;  // ...bit 10: already recording
 // 32-bit vendor properties (Ex operations). Seen on a ZR in NX Tether traffic.
 static constexpr uint32_t NIKON_PROP_MOVIE_ISO_EX  = 0x1d09e;  // UINT32 movie ISO; writable where 0xD1AA is not
 static constexpr uint32_t NIKON_PROP_MOVIE_SHUTTER_MODE_EX  = 0x1d074;  // UINT8 movie shutter: 1 = speed, 2 = angle (ZR)

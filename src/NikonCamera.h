@@ -227,8 +227,9 @@ public:
 
     // Movie recording to the card. startMovie(): StartLiveView (0x9201), then
     // StartMovieRecInCard (0x920A). stopMovie(): EndMovieRec (0x920B), then
-    // EndLiveView (0x9202). isRecording() reflects calls made through this
-    // class only: recording started on the camera body is not detected.
+    // EndLiveView (0x9202). isRecording() follows the camera, whoever started
+    // the recording: poll() reads MovRecProhibitCondition (0xD0A4), whose bit
+    // 10 means "already recording".
     CameraResult startMovie();
     CameraResult stopMovie();
     bool isRecording() const { return _recording; }
@@ -283,7 +284,7 @@ protected:
     bool              _hasModeProp;       // camera answers NIKON_PROP_PHOTO_MOVIE
     bool              _angle;             // movie shutter is in angle mode
     bool              _appMode;           // send ChangeApplicationMode(1) in begin()
-    bool              _recording;         // startMovie() succeeded, stopMovie() not yet called
+    bool              _recording;         // camera is recording a movie (D0A4 bit 10, or our start/stop)
     bool              _inAppMode;         // ChangeApplicationMode(1) succeeded this session
     uint32_t          _lastProhibit;      // MovRecProhibitCondition seen by the last startMovie()
     uint8_t           _dataBuf[8192];   // DeviceInfo and other data-in payloads

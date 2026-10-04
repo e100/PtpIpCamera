@@ -252,7 +252,7 @@ When a user reports a bug you can't reproduce:
 | Nikon ZR | Pairing protocol verified on camera; library pending on-device testing |
 | Other Nikon Z with WiFi | Untested — likely the same pairing flow |
 
-Capture: `initiateCapture()` autofocuses and shoots, `releaseShutter()` shoots without AF, `autofocus()` focuses only; files go to the card. Movies: `startMovie()` / `stopMovie()`, with `isRecording()` (tracks only recordings started through the library). AEB is not implemented yet and returns `CAM_E_NOT_SUPPORTED`.
+Capture: `initiateCapture()` autofocuses and shoots, `releaseShutter()` shoots without AF, `autofocus()` focuses only; files go to the card. Movies: `startMovie()` / `stopMovie()`, with `isRecording()`, which follows the camera even when recording is started on the body. AEB is not implemented yet and returns `CAM_E_NOT_SUPPORTED`.
 
 ### Camera setup (ZR)
 
