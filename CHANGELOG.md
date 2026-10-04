@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   WiFi PIN pairing for newer Z bodies (`startPairing()` / `confirmPairing()` /
   `finishPairing()` / `cancelPairing()`), with `pollCameraConfirmation()` /
   `waitForCameraConfirmation()` to detect the user confirming on the camera.
-  Capture and AEB not yet implemented.
+  AEB not yet implemented.
 - `NikonCamera::getPropOptions()`: reads a property's allowed values (list or
   range), current value and whether it is writable, via GetDevicePropDesc (0x1014).
   Overload by PTP property code, and `readPropDesc()` for the raw dataset.
@@ -28,7 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (GetDevicePropDescEx 0x943A, GetDevicePropValueEx 0x943B,
   SetDevicePropValueEx 0x943C), identified from NX Tether traffic. Movie ISO
   uses 0x1D09E where those operations exist (the ZR's 0xD1AA is read-only).
-  `begin()` sends ChangeApplicationMode(1) (0x9435) when supported, as NX Tether does.
+  `setApplicationMode(true)` makes `begin()` send ChangeApplicationMode(1)
+  (0x9435), as NX Tether does, and `end()` ChangeApplicationMode(0). A ZR needs
+  it to record movies remotely. Off by default: a ZR left in that mode by a host
+  that disappeared (e.g. a reflashed ESP32) has been seen to stop responding.
+- `NikonCamera::getMovieProhibit()` / `movieProhibitText()`: why movie recording
+  can't start (MovRecProhibitCondition 0xD0A4); `startMovie()` checks it first.
 - `NikonCamera::getMovieShutterMode()` / `setMovieShutterMode()`: the ZR's movie
   shutter mode, speed or angle (0x1D074). In angle mode (`movieShutterAngle()`),
   SHUTTER_SPEED addresses the shutter angle (0x1D075, degrees * 100).
@@ -37,6 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `NikonCamera::getVendorPropCodes()`: the vendor property list from Nikon
   GetVendorCodes (0x9439), including 32-bit codes on newer Z bodies.
   `readPropDesc()`, `getPropOptions()` and `setPropertyRaw()` take 32-bit codes.
+- `NikonCamera` capture and recording, from NX Tether traffic on a ZR:
+  `initiateCapture()` / `releaseShutter()` (InitiateCaptureRecInMedia 0x9207,
+  with / without AF, to the card), `autofocus()` (AfDrive 0x90C1),
+  `startMovie()` / `stopMovie()` (live view, then StartMovieRecInCard 0x920A /
+  EndMovieRec 0x920B), `isRecording()`. DeviceReady (0x90C8) is polled around them.
 - `CAM_E_NOT_PAIRED` result code.
 - `PtpDeviceInfo` / `ptpParseDeviceInfo()`: header-only parser for the DeviceInfo dataset.
 - `PtpIpSession::dataIn()` / `dataOut()`: transactions using the PTP/IP specification's

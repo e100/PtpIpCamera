@@ -133,6 +133,22 @@ public:
     // getSettings() convert either way. False on bodies without the switch.
     bool movieMode() const { return _movie; }
 
+    // Send ChangeApplicationMode(1) (0x9435) in begin(), as NX Tether does, and
+    // ChangeApplicationMode(0) in end(). A ZR needs it to record movies
+    // remotely (otherwise MovRecProhibitCondition bit 14 is set and
+    // StartMovieRecInCard fails), and shows --m--s for the remaining recording
+    // time while a host is connected without it. Settings work either way.
+    // Off by default: a host that vanished while the camera was in this mode
+    // (an ESP32 being reflashed) has been seen to leave a ZR unresponsive.
+    void setApplicationMode(bool enable) { _appMode = enable; }
+
+    // Why movie recording can't start, from MovRecProhibitCondition (0xD0A4):
+    // 0 = it can. startMovie() checks it and returns CAM_E_NOT_READY if set.
+    CameraResult getMovieProhibit(uint32_t& bits);
+    uint32_t     lastMovieProhibit() const { return _lastProhibit; }
+    // First reason in a prohibit bitmask, e.g. "card full" (as libgphoto2).
+    static const char* movieProhibitText(uint32_t bits);
+
     // Movie shutter mode (ZR, property 0x1D074): shutter speed or shutter
     // angle. CAM_E_NOT_SUPPORTED on bodies without it. While the camera is in
     // angle mode (movieShutterAngle(), read by poll()), SHUTTER_SPEED addresses
@@ -197,6 +213,27 @@ public:
     CameraResult setPropertyRaw(uint32_t propCode, uint32_t value);
 
     // -------------------------------------------------------------------------
+    // Capture and recording (sequences seen from NX Tether on a ZR)
+    // -------------------------------------------------------------------------
+
+    // Photo: autofocus then release (initiateCapture) or release only
+    // (releaseShutter), saving to the card: InitiateCaptureRecInMedia (0x9207).
+    CameraResult initiateCapture() override;
+    CameraResult releaseShutter() override;
+
+    // Autofocus once without releasing (AfDrive, 0x90C1). Not seen from NX
+    // Tether; libgphoto2 uses it on other Nikon bodies.
+    CameraResult autofocus();
+
+    // Movie recording to the card. startMovie(): StartLiveView (0x9201), then
+    // StartMovieRecInCard (0x920A). stopMovie(): EndMovieRec (0x920B), then
+    // EndLiveView (0x9202). isRecording() reflects calls made through this
+    // class only: recording started on the camera body is not detected.
+    CameraResult startMovie();
+    CameraResult stopMovie();
+    bool isRecording() const { return _recording; }
+
+    // -------------------------------------------------------------------------
     // Not yet implemented for Nikon — return CAM_E_NOT_SUPPORTED
     // -------------------------------------------------------------------------
 
@@ -207,8 +244,6 @@ public:
     CameraResult setAEBISOLimit(uint16_t minISO, uint16_t maxISO) override;
     CameraResult setAEBStep(float ev) override;
     CameraResult takeBracketedSequence(int shotCount, float evStep) override;
-    CameraResult initiateCapture() override;
-    CameraResult releaseShutter() override;
 
     // -------------------------------------------------------------------------
     // Query
@@ -247,6 +282,10 @@ protected:
     bool              _movie;             // camera's photo/movie switch is on movie
     bool              _hasModeProp;       // camera answers NIKON_PROP_PHOTO_MOVIE
     bool              _angle;             // movie shutter is in angle mode
+    bool              _appMode;           // send ChangeApplicationMode(1) in begin()
+    bool              _recording;         // startMovie() succeeded, stopMovie() not yet called
+    bool              _inAppMode;         // ChangeApplicationMode(1) succeeded this session
+    uint32_t          _lastProhibit;      // MovRecProhibitCondition seen by the last startMovie()
     uint8_t           _dataBuf[8192];   // DeviceInfo and other data-in payloads
 
     PropChangedCb           _onPropChanged;       void* _onPropChangedCtx;
@@ -285,4 +324,10 @@ protected:
 
     // The camera has Nikon's 32-bit property operations (0x943A-0x943C).
     bool _hasExProps() const;
+
+    // Send an operation with no data phase; maps the response.
+    CameraResult _command(uint16_t op, uint8_t numParams = 0, uint32_t p1 = 0, uint32_t p2 = 0);
+
+    // Poll DeviceReady (0x90C8) until the camera is not busy, up to timeoutMs.
+    CameraResult _waitReady(uint32_t timeoutMs);
 };

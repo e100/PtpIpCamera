@@ -93,6 +93,10 @@ NikonCamera::NikonCamera(PtpIpSession& session)
     , _movie(false)
     , _hasModeProp(true)
     , _angle(false)
+    , _appMode(false)
+    , _recording(false)
+    , _inAppMode(false)
+    , _lastProhibit(0)
     , _onPropChanged(nullptr),       _onPropChangedCtx(nullptr)
     , _onCaptureComplete(nullptr),   _onCaptureCompleteCtx(nullptr)
     , _onConnectionChanged(nullptr), _onConnectionChangedCtx(nullptr)
@@ -132,6 +136,8 @@ CameraResult NikonCamera::begin(const char* host) {
     _pairState = NikonPairingState::IDLE;
     _movie = false;
     _angle = false;
+    _recording = false;
+    _inAppMode = false;
     _hasModeProp = true;    // re-detect: an unpaired camera refuses every property
 
     CameraResult r = _open(host);
@@ -165,11 +171,13 @@ CameraResult NikonCamera::begin(const char* host) {
     }
 
     // NX Tether switches the camera to remote application mode before changing
-    // settings; do the same. Failure is not fatal.
-    if (_info.supportsOperation(PTP_OP_NIKON_CHANGE_APP_MODE)) {
+    // settings. Opt-in (setApplicationMode()); failure is not fatal.
+    if (_appMode && _info.supportsOperation(PTP_OP_NIKON_CHANGE_APP_MODE)) {
         uint16_t rc;
         if (!_session.sendCommand(PTP_OP_NIKON_CHANGE_APP_MODE, rc, 1) || rc != PTP_RSP_OK) {
             LOG_WARNING("ChangeApplicationMode(1) failed (response 0x%04X)", rc);
+        } else {
+            _inAppMode = true;
         }
     }
 
@@ -191,6 +199,11 @@ void NikonCamera::end() {
     _ready = false;
     _state = {};
     _pairState = NikonPairingState::IDLE;
+    if (_inAppMode) {            // leave application mode before closing, so the camera isn't left in it
+        uint16_t rc;
+        _session.sendCommand(PTP_OP_NIKON_CHANGE_APP_MODE, rc, 0);
+        _inAppMode = false;
+    }
     _session.closeSession();
     _session.disconnect();
     if (wasReady && _onConnectionChanged) _onConnectionChanged(false, _onConnectionChangedCtx);
@@ -751,6 +764,111 @@ bool NikonCamera::_hasProp(uint16_t code) const {
 }
 
 // ============================================================================
+// Capture and recording
+// ============================================================================
+
+CameraResult NikonCamera::_command(uint16_t op, uint8_t numParams, uint32_t p1, uint32_t p2) {
+    if (!_ready) return CAM_E_NOT_CONNECTED;
+    uint16_t rc;
+    bool ok = numParams == 0 ? _session.sendCommand(op, rc)
+            : numParams == 1 ? _session.sendCommand(op, rc, p1)
+                             : _session.sendCommand(op, rc, p1, p2);
+    if (!ok) return CAM_E_PROTOCOL;
+    if (rc != PTP_RSP_OK) LOG_WARNING("operation 0x%04X: response 0x%04X", op, rc);
+    return _mapResponse(rc);
+}
+
+CameraResult NikonCamera::_waitReady(uint32_t timeoutMs) {
+    if (!_info.supportsOperation(PTP_OP_NIKON_DEVICE_READY)) return CAM_OK;
+    uint32_t start = millis();
+    while (true) {
+        CameraResult r = _command(PTP_OP_NIKON_DEVICE_READY);
+        if (r != CAM_E_BUSY) return r;
+        if (millis() - start >= timeoutMs) return CAM_E_TIMEOUT;
+        delay(20);
+    }
+}
+
+CameraResult NikonCamera::initiateCapture() {
+    if (!_info.supportsOperation(PTP_OP_NIKON_CAPTURE_REC_IN_MEDIA)) return CAM_E_NOT_SUPPORTED;
+    _waitReady(2000);
+    CameraResult r = _command(PTP_OP_NIKON_CAPTURE_REC_IN_MEDIA, 2, NIKON_CAPTURE_AF, NIKON_CAPTURE_TO_CARD);
+    if (r == CAM_OK) _waitReady(5000);
+    return r;
+}
+
+CameraResult NikonCamera::releaseShutter() {
+    if (!_info.supportsOperation(PTP_OP_NIKON_CAPTURE_REC_IN_MEDIA)) return CAM_E_NOT_SUPPORTED;
+    _waitReady(2000);
+    CameraResult r = _command(PTP_OP_NIKON_CAPTURE_REC_IN_MEDIA, 2, NIKON_CAPTURE_NO_AF, NIKON_CAPTURE_TO_CARD);
+    if (r == CAM_OK) _waitReady(5000);
+    return r;
+}
+
+CameraResult NikonCamera::autofocus() {
+    if (!_info.supportsOperation(PTP_OP_NIKON_AF_DRIVE)) return CAM_E_NOT_SUPPORTED;
+    _waitReady(2000);
+    CameraResult r = _command(PTP_OP_NIKON_AF_DRIVE);
+    if (r == CAM_OK) _waitReady(3000);
+    return r;
+}
+
+CameraResult NikonCamera::getMovieProhibit(uint32_t& bits) {
+    if (!_ready) return CAM_E_NOT_CONNECTED;
+    return _getProp(NIKON_PROP_MOV_REC_PROHIBIT, bits);
+}
+
+const char* NikonCamera::movieProhibitText(uint32_t bits) {
+    static const struct { uint8_t bit; const char* text; } REASONS[] = {
+        { 14, "not in application mode" }, { 13, "photo/movie selector on photo" },
+        { 12, "in enlarged live view" },   { 11, "card protected" },
+        { 10, "already recording" },       { 9,  "buffer not written yet" },
+        { 3,  "card full" },               { 2,  "card not formatted" },
+        { 1,  "card error" },              { 0,  "no card" },
+    };
+    if (bits == 0) return "none";
+    for (const auto& r : REASONS) if (bits & (1u << r.bit)) return r.text;
+    return "unknown reason";
+}
+
+CameraResult NikonCamera::startMovie() {
+    if (!_info.supportsOperation(PTP_OP_NIKON_START_MOVIE)) return CAM_E_NOT_SUPPORTED;
+    _lastProhibit = 0;
+    uint32_t bits = 0;
+    if (getMovieProhibit(bits) == CAM_OK && bits != 0) {
+        _lastProhibit = bits;
+        LOG_WARNING("Movie recording can't start: %s (MovRecProhibitCondition 0x%08lX)",
+                    movieProhibitText(bits), (unsigned long)bits);
+        return CAM_E_NOT_READY;
+    }
+    _waitReady(2000);
+    // Live view first, as NX Tether does; busy/already-on is not fatal
+    if (_info.supportsOperation(PTP_OP_NIKON_START_LIVEVIEW)) {
+        CameraResult lv = _command(PTP_OP_NIKON_START_LIVEVIEW);
+        if (lv != CAM_OK && lv != CAM_E_BUSY) LOG_WARNING("StartLiveView: %s", cameraResultStr(lv));
+        _waitReady(2000);
+    }
+    CameraResult r = _command(PTP_OP_NIKON_START_MOVIE);
+    if (r == CAM_OK) {
+        _recording = true;
+        LOG_INFO("Movie recording started");
+    }
+    return r;
+}
+
+CameraResult NikonCamera::stopMovie() {
+    if (!_info.supportsOperation(PTP_OP_NIKON_END_MOVIE)) return CAM_E_NOT_SUPPORTED;
+    CameraResult r = _command(PTP_OP_NIKON_END_MOVIE);
+    if (r == CAM_OK) {
+        _recording = false;
+        LOG_INFO("Movie recording stopped");
+        _waitReady(3000);
+        if (_info.supportsOperation(PTP_OP_NIKON_END_LIVEVIEW)) _command(PTP_OP_NIKON_END_LIVEVIEW);
+    }
+    return r;
+}
+
+// ============================================================================
 // Not yet implemented
 // ============================================================================
 
@@ -761,8 +879,6 @@ CameraResult NikonCamera::setAEBShutterLimit(float, float)           { return CA
 CameraResult NikonCamera::setAEBISOLimit(uint16_t, uint16_t)         { return CAM_E_NOT_SUPPORTED; }
 CameraResult NikonCamera::setAEBStep(float)                          { return CAM_E_NOT_SUPPORTED; }
 CameraResult NikonCamera::takeBracketedSequence(int, float)          { return CAM_E_NOT_SUPPORTED; }
-CameraResult NikonCamera::initiateCapture()                          { return CAM_E_NOT_SUPPORTED; }
-CameraResult NikonCamera::releaseShutter()                           { return CAM_E_NOT_SUPPORTED; }
 
 // ============================================================================
 // Query
